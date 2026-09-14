@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Macon County · K1A5 · METAR map</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#091720">
+<meta name="description" content="Live regional METAR map for the southern Appalachians, centered on Macon County Airport (K1A5), Franklin, North Carolina.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --bg:#091720; --bg-2:#0d2632; --panel:rgba(9,23,32,.88); --line:rgba(140,185,205,.22);
+    --ink:#d6e7f0; --ink-dim:#7f9aa8; --ink-faint:#5b7382;
+    --vfr:#39c46e; --mvfr:#3d9be9; --ifr:#e8523f; --lifr:#c25ad6; --none:#64798a;
+    --accent:#59d4e8;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);-webkit-text-size-adjust:100%;overscroll-behavior:none}
+  #map{position:absolute;inset:0;background:var(--bg)}
+  .leaflet-container{background:var(--bg);font-family:var(--sans)}
+  .leaflet-control-zoom a{background:var(--bg-2);color:var(--ink);border-color:var(--line)}
+  .leaflet-control-zoom a:hover{background:#12384a;color:#fff}
+  .leaflet-bar{border:1px solid var(--line);box-shadow:none}
+
+  /* ---- chip rail ---- */
+  #rail{position:absolute;top:10px;right:10px;z-index:900;display:flex;flex-direction:column;gap:5px;
+    max-height:calc(100% - 20px);overflow:auto;scrollbar-width:none}
+  #rail::-webkit-scrollbar{display:none}
+  .chip{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink-dim);
+    font:500 12px/1 var(--sans);letter-spacing:.01em;padding:8px 11px;border-radius:3px;cursor:pointer;
+    backdrop-filter:blur(8px);text-align:left;white-space:nowrap;transition:color .12s,border-color .12s}
+  .chip:hover{color:var(--ink);border-color:rgba(140,185,205,.45)}
+  .chip[aria-pressed="true"]{color:var(--bg);background:var(--accent);border-color:var(--accent);font-weight:600}
+  .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .rail-gap{height:7px}
+
+  /* ---- home card: the hero ---- */
+  #home{position:absolute;top:10px;left:52px;z-index:900;width:264px;max-width:calc(100vw - 72px);
+    background:var(--panel);border:1px solid var(--line);border-radius:4px;backdrop-filter:blur(10px);
+    padding:12px 14px 11px}
+  #home h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.02em}
+  #home h1 span{color:var(--ink-faint);font-weight:400}
+  #home .cat{display:flex;align-items:baseline;gap:9px;margin:9px 0 2px}
+  #home .catword{font-size:31px;font-weight:700;line-height:.95;letter-spacing:-.02em}
+  #home .catsub{font-size:11px;color:var(--ink-dim)}
+  #home .grid{display:grid;grid-template-columns:1fr 1fr;gap:3px 14px;margin-top:9px;font-size:12px}
+  #home .grid div{display:flex;justify-content:space-between;gap:8px;
+    border-bottom:1px dotted rgba(140,185,205,.16);padding:2px 0}
+  #home .grid b{font-weight:600;font-variant-numeric:tabular-nums}
+  #home .raw{margin-top:9px;font:11px/1.45 var(--mono);color:var(--ink-dim);word-break:break-word}
+  #home.collapsed .grid,#home.collapsed .raw,#home.collapsed .cat{display:none}
+  #homeToggle{position:absolute;top:8px;right:8px;background:none;border:0;color:var(--ink-faint);
+    cursor:pointer;font:600 15px/1 var(--sans);padding:2px 5px}
+  #homeToggle:hover{color:var(--ink)}
+
+  /* ---- observation list ---- */
+  #obs{position:absolute;left:10px;bottom:34px;z-index:900;width:306px;max-width:calc(100vw - 20px);
+    max-height:min(46vh,430px);display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line);border-radius:4px;backdrop-filter:blur(10px)}
+  #obsHead{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--line);
+    font-size:12px;color:var(--ink-dim)}
+  #obsHead strong{color:var(--ink);font-weight:600}
+  #obsHead button{margin-left:auto;background:none;border:0;color:var(--ink-faint);cursor:pointer;
+    font:600 15px/1 var(--sans);padding:2px 4px}
+  #obsHead button:hover{color:var(--ink)}
+  #obsList{overflow:auto;flex:1}
+  #obs.collapsed #obsList{display:none}
+  .row{display:grid;grid-template-columns:14px 52px 1fr auto;gap:8px;align-items:center;
+    padding:6px 11px;border-bottom:1px solid rgba(140,185,205,.1);cursor:pointer;font-size:12px}
+  .row:hover{background:rgba(89,212,232,.09)}
+  .row:last-child{border-bottom:0}
+  .dot{width:9px;height:9px;border-radius:50%;justify-self:center}
+  .row .id{font:600 12px/1 var(--mono);letter-spacing:.02em}
+  .row .det{color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .brg{color:var(--ink-faint);font-variant-numeric:tabular-nums;font-size:11px}
+  .row.stale .id,.row.stale .det{color:var(--ink-faint)}
+
+  /* ---- legend + status ---- */
+  #legend{position:absolute;left:10px;bottom:10px;z-index:900;display:flex;flex-wrap:wrap;gap:4px 11px;
+    align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:3px;
+    padding:5px 9px;font-size:11px;color:var(--ink-dim);backdrop-filter:blur(8px);max-width:calc(100vw - 20px)}
+  #legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+  #status{position:absolute;right:10px;bottom:10px;z-index:900;background:var(--panel);
+    border:1px solid var(--line);border-radius:3px;padding:5px 9px;font-size:11px;color:var(--ink-dim);
+    backdrop-filter:blur(8px);max-width:min(430px,calc(100vw - 20px));text-align:right}
+  #status.err{color:#ffb4a8;border-color:rgba(232,82,63,.55)}
+  #status a{color:var(--accent)}
+  #status button{background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0 0 0 6px}
+
+  /* ---- markers ---- */
+  .stn{background:none;border:0}
+  .stn svg{overflow:visible;display:block}
+  .stn .lbl{font:600 9px/1 var(--mono);fill:var(--ink);paint-order:stroke;
+    stroke:#091720;stroke-width:2.5px;stroke-linejoin:round}
+  .stn.home .ring{stroke:var(--accent);stroke-width:1.6;fill:none}
+
+  .leaflet-popup-content-wrapper{background:#0d2632;color:var(--ink);border:1px solid var(--line);
+    border-radius:4px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  .leaflet-popup-tip{background:#0d2632;border:1px solid var(--line)}
+  .leaflet-popup-content{margin:11px 13px;font-size:12px;min-width:216px}
+  .pop h2{margin:0 0 2px;font-size:13px;font-weight:600}
+  .pop .sub{color:var(--ink-faint);font-size:11px;margin-bottom:7px}
+  .pop table{width:100%;border-collapse:collapse;font-size:12px}
+  .pop td{padding:2px 0;border-bottom:1px dotted rgba(140,185,205,.16)}
+  .pop td:last-child{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+  .pop .raw{margin-top:7px;font:11px/1.45 var(--mono);color:var(--ink-dim);word-break:break-word}
+  .leaflet-popup-close-button{color:var(--ink-faint)!important}
+
+  .windpt{background:none;border:0}
+  .windpt svg{overflow:visible}
+  .windpt text{font:600 9px/1 var(--mono);fill:#bcd6e2;paint-order:stroke;stroke:#091720;stroke-width:2.5px}
+
+  .sig{font:600 10px/1 var(--sans)}
+  @media (max-width:620px){
+    #home{left:10px;top:auto;bottom:10px;width:calc(100vw - 20px)}
+    #obs{display:none}
+    #legend{display:none}
+    .leaflet-control-zoom{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<section id="home" aria-live="polite">
+  <button id="homeToggle" title="Collapse">–</button>
+  <h1>K1A5 <span>Macon County · Franklin, NC · 2,034 ft</span></h1>
+  <div class="cat"><div class="catword" id="hCat">…</div><div class="catsub" id="hAge">connecting</div></div>
+  <div class="grid">
+    <div><span>Wind</span><b id="hWind">–</b></div>
+    <div><span>Vis</span><b id="hVis">–</b></div>
+    <div><span>Ceiling</span><b id="hCeil">–</b></div>
+    <div><span>Alt</span><b id="hAlt">–</b></div>
+    <div><span>T / Td</span><b id="hTemp">–</b></div>
+    <div><span>Dens alt</span><b id="hDa">–</b></div>
+  </div>
+  <div class="raw" id="hRaw"></div>
+</section>
+
+<nav id="rail" aria-label="Map layers">
+  <button class="chip" id="fitHome">Fit K1A5</button>
+  <button class="chip" id="fitRegion">Fit region</button>
+  <div class="rail-gap"></div>
+  <button class="chip" data-layer="terrain" aria-pressed="true">Terrain</button>
+  <button class="chip" data-layer="radar" aria-pressed="false">Radar</button>
+  <button class="chip" data-layer="wind3k" aria-pressed="false">3K wind</button>
+  <button class="chip" data-layer="wind10k" aria-pressed="false">10K wind</button>
+  <button class="chip" data-layer="barbs" aria-pressed="true">APT wind</button>
+  <button class="chip" data-layer="airsig" aria-pressed="false">AIRMET / SIGMET</button>
+  <div class="rail-gap"></div>
+  <button class="chip" id="refresh">Refresh</button>
+  <button class="chip" id="fs">Full screen</button>
+</nav>
+
+<aside id="obs">
+  <div id="obsHead"><strong>Nearby fields</strong><span id="obsCount"></span>
+    <button id="obsToggle" title="Collapse">–</button></div>
+  <div id="obsList"></div>
+</aside>
+
+<div id="legend">
+  <span><i style="background:var(--vfr)"></i>VFR</span>
+  <span><i style="background:var(--mvfr)"></i>MVFR</span>
+  <span><i style="background:var(--ifr)"></i>IFR</span>
+  <span><i style="background:var(--lifr)"></i>LIFR</span>
+  <span><i style="background:var(--none)"></i>No current data</span>
+  <span>Barb: half 5 · full 10 · pennant 50 kt</span>
+</div>
+
+<div id="status">Connecting to airport weather…</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ============================================================================
+   K1A5 regional METAR map
+   Single file. Edit CONFIG and nothing else to re-home it on another field.
+   ========================================================================== */
+
+const CONFIG = {
+  home: { id:'K1A5', name:'Macon County', city:'Franklin, NC',
+          lat:35.22231, lon:-83.42000, elev:2034 },
+
+  // minLat, minLon, maxLat, maxLon — southern Appalachians + upstate SC + north GA
+  bbox: [33.55, -85.45, 36.85, -81.35],
+
+  homeZoom: 9,
+
+  // Leave '' to call aviationweather.gov directly. AWC documents that CORS is
+  // NOT permitted, so a browser will usually block that. Point this at your own
+  // proxy (see worker.js) — e.g. 'https://metar.yourname.workers.dev/?u='
+  // The target URL is appended, URI-encoded.
+  proxy: '',
+
+  refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
+  staleMin: 90                // older than this = treated as no current data
+};
+
+/* ---------- small helpers ---------- */
+const $ = s => document.querySelector(s);
+const pad = n => String(n).padStart(2,'0');
+const R_NM = 3440.065;
+const toRad = d => d*Math.PI/180, toDeg = r => r*180/Math.PI;
+
+function distNM(a,b,c,d){
+  const dLat=toRad(c-a), dLon=toRad(d-b);
+  const h=Math.sin(dLat/2)**2+Math.cos(toRad(a))*Math.cos(toRad(c))*Math.sin(dLon/2)**2;
+  return 2*R_NM*Math.asin(Math.sqrt(h));
+}
+function bearing(a,b,c,d){
+  const y=Math.sin(toRad(d-b))*Math.cos(toRad(c));
+  const x=Math.cos(toRad(a))*Math.sin(toRad(c))-Math.sin(toRad(a))*Math.cos(toRad(c))*Math.cos(toRad(d-b));
+  return (toDeg(Math.atan2(y,x))+360)%360;
+}
+const compass = d => ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW']
+  [Math.round(d/22.5)%16];
+
+/* ============================================================================
+   METAR parser — raw text is the single source of truth, so the same code path
+   serves AWC JSON (rawOb) and any other feed that hands back a raw report.
+   ========================================================================== */
+const WX_DESC = {
+  RA:'rain', DZ:'drizzle', SN:'snow', SG:'snow grains', PL:'ice pellets', GR:'hail',
+  GS:'small hail', IC:'ice crystals', UP:'unknown precip', BR:'mist', FG:'fog',
+  FU:'smoke', HZ:'haze', DU:'dust', SA:'sand', VA:'volcanic ash', PY:'spray',
+  SQ:'squall', FC:'funnel cloud', SS:'sandstorm', DS:'duststorm', PO:'dust whirls'
+};
+const WX_RE = /^(-|\+|VC)?(MI|PR|BC|DR|BL|SH|TS|FZ)?((?:DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS)*)$/;
+const CLD_RE = /^(SKC|CLR|NSC|NCD|FEW|SCT|BKN|OVC|VV)(\d{3}|\/{3})?(CB|TCU)?$/;
+const isWx = tok => { const m = tok.match(WX_RE); return !!(m && tok.length>1 && (m[2]||m[3])); };
+
+function parseMetar(raw){
+  if(!raw) return null;
+  const o = { raw:raw.trim(), wx:[], clouds:[], vis:null, wdir:null, wspd:null, wgst:null,
+              temp:null, dewp:null, altim:null, ceiling:null, auto:false, obsTime:null };
+  const t = o.raw.replace(/^(METAR|SPECI)\s+/,'').split(/\s+/);
+  let i = 0;
+  o.id = t[i++];
+
+  if(/^\d{6}Z$/.test(t[i])){
+    const s=t[i++], day=+s.slice(0,2), hh=+s.slice(2,4), mm=+s.slice(4,6);
+    const now=new Date(), d=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),day,hh,mm));
+    if(d-now > 6*3600e3) d.setUTCMonth(d.getUTCMonth()-1);
+    o.obsTime = d;
+  }
+  while(i<t.length && /^(AUTO|COR|NIL|RTD)$/.test(t[i])){ if(t[i]==='AUTO') o.auto=true; i++; }
+
+  // wind
+  let m = t[i] && t[i].match(/^(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS|KMH)$/);
+  if(m){
+    const k = m[4]==='MPS' ? 1.94384 : m[4]==='KMH' ? 0.539957 : 1;
+    o.wdir = m[1]==='VRB' ? 'VRB' : +m[1];
+    o.wspd = Math.round(+m[2]*k);
+    if(m[3]) o.wgst = Math.round(+m[3]*k);
+    i++;
+    if(t[i] && /^\d{3}V\d{3}$/.test(t[i])){ o.wvar = t[i]; i++; }
+  }
+  // visibility
+  if(t[i]==='CAVOK'){ o.vis=10; o.cavok=true; i++; }
+  else{
+    if(/^\d$/.test(t[i]) && /^\d\/\d+SM$/.test(t[i+1]||'')){
+      const f=t[i+1].replace('SM','').split('/');
+      o.vis = +t[i] + (+f[0]/+f[1]); i+=2;
+    } else if((m = t[i] && t[i].match(/^(M)?(\d+(?:\/\d+)?)SM$/))){
+      const p = m[2].includes('/') ? (+m[2].split('/')[0]/+m[2].split('/')[1]) : +m[2];
+      o.vis = p; o.visLess = !!m[1]; i++;
+    } else if(/^\d{4}$/.test(t[i])){
+      o.vis = +t[i]/1609.34; i++;
+    }
+  }
+  // Everything from here to RMK is classified token by token. A token the
+  // parser does not recognize is skipped rather than halting the scan.
+  for(; i<t.length; i++){
+    const tok = t[i];
+    if(tok === 'RMK') break;
+    if(/^R\d{2}[LCR]?\//.test(tok)) continue;          // RVR
+    if(isWx(tok)){
+      const w = tok.match(WX_RE);
+      o.wx.push({ code:tok, inten:w[1]||'', desc:w[2]||'', phen:w[3]||'' });
+      continue;
+    }
+    if((m = tok.match(CLD_RE))){
+      const amt = m[1], hgt = (m[2] && m[2] !== '///') ? +m[2]*100 : null;
+      o.clouds.push({ amt, hgt, type:m[3]||'' });
+      if((amt==='BKN'||amt==='OVC'||amt==='VV') && hgt!=null && o.ceiling==null) o.ceiling = hgt;
+      continue;
+    }
+    if((m = tok.match(/^(M?\d{2})\/(M?\d{2})?$/))){
+      const num = s => s==null ? null : (s[0]==='M' ? -+s.slice(1) : +s);
+      o.temp = num(m[1]); o.dewp = num(m[2]);
+      continue;
+    }
+    if((m = tok.match(/^A(\d{4})$/)))      { o.altim = +m[1]/100;    continue; }
+    if((m = tok.match(/^Q(\d{4})$/)))      { o.altim = +m[1]*0.02953; continue; }
+  }
+
+  const rmk = o.raw.indexOf(' RMK');
+  o.remarks = rmk>-1 ? o.raw.slice(rmk+5) : '';
+
+  // precise temp from RMK Txxxxxxxx when present
+  const tm = o.remarks.match(/\bT([01]\d{3})([01]\d{3})?\b/);
+  if(tm){
+    const dec = s => (s[0]==='1'?-1:1)*(+s.slice(1)/10);
+    o.temp = dec(tm[1]); if(tm[2]) o.dewp = dec(tm[2]);
+  }
+  o.lightning = /\bLTG/.test(o.remarks) || o.wx.some(w=>w.desc==='TS');
+  return o;
+}
+
+function category(p){
+  if(!p) return 'NONE';
+  if(p.vis==null && p.clouds.length===0) return 'NONE';   // nothing usable reported
+  const c = p.ceiling==null ? 99999 : p.ceiling;
+  const v = p.vis==null ? 99 : (p.visLess ? p.vis - 0.01 : p.vis);
+  if(c<500  || v<1) return 'LIFR';
+  if(c<1000 || v<3) return 'IFR';
+  if(c<=3000|| v<=5) return 'MVFR';
+  return 'VFR';
+}
+const CAT_COLOR = { VFR:'#39c46e', MVFR:'#3d9be9', IFR:'#e8523f', LIFR:'#c25ad6', NONE:'#64798a' };
+
+function densityAlt(elevFt, tempC, altimInHg){
+  if(tempC==null||altimInHg==null) return null;
+  const pa = elevFt + (29.92 - altimInHg)*1000;
+  const isa = 15 - 1.98*(pa/1000);
+  return Math.round(pa + 118.8*(tempC - isa));
+}
+
+function ageMin(d){ return d ? (Date.now()-d.getTime())/60000 : null; }
+function ageText(d){
+  const a = ageMin(d);
+  if(a==null) return '—';
+  if(a<1) return 'just now';
+  if(a<60) return Math.round(a)+' min ago';
+  return (a/60).toFixed(1)+' hr ago';
+}
+function visText(v, less){
+  if(v==null) return '—';
+  if(v>=10) return '10+ sm';
+  if(v>=1) return (Math.round(v*10)/10)+' sm';
+  const f=[[1/16,'1/16'],[1/8,'1/8'],[1/4,'1/4'],[1/2,'1/2'],[3/4,'3/4']];
+  let best=f[0]; for(const x of f) if(Math.abs(x[0]-v)<Math.abs(best[0]-v)) best=x;
+  return (less?'<':'')+best[1]+' sm';
+}
+function ceilText(p){
+  if(!p) return '—';
+  if(p.ceiling!=null) return p.ceiling.toLocaleString()+' ft';
+  return p.clouds.length ? 'unlimited' : '—';
+}
+function windText(p){
+  if(!p||p.wspd==null) return '—';
+  if(p.wspd===0) return 'calm';
+  const d = p.wdir==='VRB' ? 'VRB' : String(p.wdir).padStart(3,'0')+'°';
+  return d+' '+p.wspd+(p.wgst?'G'+p.wgst:'')+' kt';
+}
+
+/* ============================================================================
+   Wind barb — proper aviation barb: pennant 50, full 10, half 5.
+   Staff points toward the direction the wind is FROM.
+   ========================================================================== */
+function barbSVG(dir, spd, gust, color){
+  if(spd==null) return '';
+  if(spd < 3) return `<circle cx="0" cy="0" r="6.5" fill="none" stroke="${color}" stroke-width="1.4"/>`;
+  if(dir==='VRB'||dir==null)
+    return `<text x="0" y="-11" text-anchor="middle" fill="${color}" font-size="9" font-weight="700">VRB${spd}</text>`;
+
+  const L = 26;
+  let s = `<line x1="0" y1="0" x2="0" y2="${-L}" stroke="${color}" stroke-width="1.5"/>`;
+  let rem = Math.round(spd/5)*5, y = -L, step = 4.6;
+  const pennants = Math.floor(rem/50); rem -= pennants*50;
+  const fulls = Math.floor(rem/10); rem -= fulls*10;
+  const half = rem >= 5 ? 1 : 0;
+
+  for(let i=0;i<pennants;i++){
+    s += `<polygon points="0,${y} 0,${y+step*1.6} 11,${y+step*0.8}" fill="${color}"/>`;
+    y += step*1.9;
+  }
+  for(let i=0;i<fulls;i++){
+    s += `<line x1="0" y1="${y}" x2="11" y2="${y-4.2}" stroke="${color}" stroke-width="1.5"/>`;
+    y += step;
+  }
+  if(half){
+    if(pennants===0 && fulls===0) y += step;   // half barb never sits at the tip
+    s += `<line x1="0" y1="${y}" x2="5.5" y2="${y-2.1}" stroke="${color}" stroke-width="1.5"/>`;
+  }
+  if(gust) s += `<text x="13" y="${-L+3}" fill="${color}" font-size="8.5" font-weight="700">G${gust}</text>`;
+  return `<g transform="rotate(${dir})">${s}</g>`;
+}
+
+function wxGlyph(p,color){
+  if(!p) return '';
+  const has = c => p.wx.some(w=>w.phen.includes(c));
+  let g='';
+  if(p.lightning)                 g = `<path d="M-2.5,-4 L1,-1 L-0.8,-1 L2.5,4 L-1,0.6 L0.8,0.6 Z" fill="#ffd34d"/>`;
+  else if(has('FG'))              g = `<g stroke="#9fb9c6" stroke-width="1.3"><line x1="-4" y1="-2" x2="4" y2="-2"/><line x1="-4" y1="1" x2="4" y2="1"/><line x1="-4" y1="4" x2="2" y2="4"/></g>`;
+  else if(has('SN')||has('PL'))   g = `<g stroke="#cfe8f5" stroke-width="1.2"><line x1="0" y1="-4" x2="0" y2="4"/><line x1="-3.5" y1="-2" x2="3.5" y2="2"/><line x1="-3.5" y1="2" x2="3.5" y2="-2"/></g>`;
+  else if(has('RA')||has('DZ'))   g = `<g stroke="#67b6ea" stroke-width="1.4"><line x1="-3" y1="-4" x2="-4" y2="3"/><line x1="0" y1="-4" x2="-1" y2="3"/><line x1="3" y1="-4" x2="2" y2="3"/></g>`;
+  else if(has('BR')||has('HZ'))   g = `<g stroke="#8aa6b4" stroke-width="1.2"><line x1="-4" y1="-1" x2="4" y2="-1"/><line x1="-4" y1="2" x2="4" y2="2"/></g>`;
+  return g ? `<g transform="translate(0,15)">${g}</g>` : '';
+}
+
+/* ============================================================================
+   Map
+   ========================================================================== */
+const B = CONFIG.bbox;
+const REGION = L.latLngBounds([B[0],B[1]],[B[2],B[3]]);
+
+const map = L.map('map',{ zoomControl:false, attributionControl:false, worldCopyJump:false,
+  minZoom:5, maxZoom:13 }).setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
+L.control.zoom({position:'topleft'}).addTo(map);
+
+const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  { subdomains:'abcd', maxZoom:19, attribution:'CARTO / OpenStreetMap' }).addTo(map);
+
+const terrain = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' }).addTo(map);
+
+const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
+const radar = L.tileLayer(RADAR_TPL,
+  { opacity:0.55, maxZoom:13, attribution:'NOAA / NWS via Iowa State Mesonet' });
+
+const layers = {
+  stations : L.layerGroup().addTo(map),
+  wind3k   : L.layerGroup(),
+  wind10k  : L.layerGroup(),
+  airsig   : L.layerGroup()
+};
+let showBarbs = true;
+
+// home field ring
+L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,color:'#59d4e8',weight:1,
+  opacity:.45,fill:false,dashArray:'3 5'}).addTo(map);   // 5 nm
+
+/* ---------- status ---------- */
+let statusEl = $('#status');
+function setStatus(html, isErr){
+  statusEl.innerHTML = html;
+  statusEl.classList.toggle('err', !!isErr);
+}
+
+/* ---------- fetch with optional proxy ---------- */
+async function awc(path){
+  const target = 'https://aviationweather.gov/api/data/' + path;
+  const url = CONFIG.proxy ? CONFIG.proxy + encodeURIComponent(target) : target;
+  const r = await fetch(url, { headers:{ 'Accept':'application/json' } });
+  if(r.status === 204) return [];
+  if(!r.ok) throw new Error('AWC HTTP '+r.status);
+  const txt = await r.text();
+  if(!txt.trim()) return [];
+  return JSON.parse(txt);
+}
+
+/* ============================================================================
+   Stations
+   ========================================================================== */
+let stations = new Map();   // id -> {lat,lon,name,parsed,cat,marker,dist,brg}
+
+function stationIcon(st, isHome){
+  const color = CAT_COLOR[st.cat];
+  const p = st.parsed;
+  const barb = (showBarbs && st.cat!=='NONE') ? barbSVG(p&&p.wdir, p&&p.wspd, p&&p.wgst, color) : '';
+  const ring = isHome ? `<circle class="ring" cx="0" cy="0" r="9.5"/>` : '';
+  const html = `<svg width="92" height="92" viewBox="-46 -46 92 92">
+    <g>${barb}${ring}
+      <circle cx="0" cy="0" r="5.4" fill="${color}" stroke="#091720" stroke-width="1.2"/>
+      ${wxGlyph(p,color)}
+      <text class="lbl" x="9" y="4">${st.id.replace(/^K/,'')}</text>
+    </g></svg>`;
+  return L.divIcon({ className:'stn'+(isHome?' home':''), html, iconSize:[92,92], iconAnchor:[46,46] });
+}
+
+function popupHTML(st){
+  const p = st.parsed, c = st.cat;
+  const rows = [
+    ['Category', `<span style="color:${CAT_COLOR[c]}">${c==='NONE'?'no data':c}</span>`],
+    ['Wind', windText(p)],
+    ['Visibility', visText(p&&p.vis, p&&p.visLess)],
+    ['Ceiling', ceilText(p)],
+    ['Sky', p&&p.clouds.length ? p.clouds.map(x=>x.amt+(x.hgt!=null?' '+x.hgt.toLocaleString():'')).join(', ') : '—'],
+    ['Weather', p&&p.wx.length ? p.wx.map(w=>WX_DESC[w.phen]||w.code).join(', ') : 'none reported'],
+    ['Temp / dew', p&&p.temp!=null ? `${p.temp}° / ${p.dewp==null?'—':p.dewp+'°'} C` : '—'],
+    ['Altimeter', p&&p.altim!=null ? p.altim.toFixed(2)+'"' : '—'],
+    ['Observed', ageText(p&&p.obsTime)]
+  ];
+  return `<div class="pop"><h2>${st.id} · ${st.name||''}</h2>
+    <div class="sub">${st.dist!=null? st.dist.toFixed(0)+' nm '+compass(st.brg)+' of K1A5 · ':''}
+      ${st.elev!=null? Math.round(st.elev)+' ft':''}</div>
+    <table>${rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
+    <div class="raw">${p?p.raw:'No current observation.'}</div></div>`;
+}
+
+function renderStations(){
+  layers.stations.clearLayers();
+  const list = [...stations.values()].sort((a,b)=>(a.dist??1e9)-(b.dist??1e9));
+  for(const st of list){
+    const isHome = st.id === CONFIG.home.id;
+    st.marker = L.marker([st.lat,st.lon],{ icon:stationIcon(st,isHome),
+      zIndexOffset: isHome?1000:(st.cat==='NONE'?-100:0) })
+      .bindPopup(()=>popupHTML(st), { maxWidth:320 })
+      .addTo(layers.stations);
+  }
+  renderList(list);
+  renderHome();
+}
+
+function renderList(list){
+  const rows = list.slice(0,40).map(st=>{
+    const p = st.parsed;
+    const det = st.cat==='NONE' ? 'no current observation'
+      : `${windText(p)} · ${visText(p&&p.vis, p&&p.visLess)} · ${ceilText(p)}`;
+    return `<div class="row${st.cat==='NONE'?' stale':''}" data-id="${st.id}">
+      <span class="dot" style="background:${CAT_COLOR[st.cat]}"></span>
+      <span class="id">${st.id}</span>
+      <span class="det">${det}</span>
+      <span class="brg">${st.dist==null?'':st.dist.toFixed(0)+' '+compass(st.brg)}</span>
+    </div>`;
+  }).join('');
+  $('#obsList').innerHTML = rows || '<div class="row"><span></span><span class="det">Waiting for observations</span></div>';
+  $('#obsCount').textContent = list.length ? list.length+' reporting' : '';
+  $('#obsList').querySelectorAll('.row').forEach(r=>{
+    r.onclick = ()=>{ const st = stations.get(r.dataset.id); if(!st) return;
+      map.setView([st.lat,st.lon], Math.max(map.getZoom(),10));
+      st.marker && st.marker.openPopup(); };
+  });
+}
+
+function renderHome(){
+  const st = stations.get(CONFIG.home.id);
+  const p = st && st.parsed;
+  const cat = st ? st.cat : 'NONE';
+  $('#hCat').textContent = cat==='NONE' ? '—' : cat;
+  $('#hCat').style.color = CAT_COLOR[cat];
+  $('#hAge').textContent = p ? ageText(p.obsTime) : 'no current observation';
+  $('#hWind').textContent = windText(p);
+  $('#hVis').textContent  = visText(p&&p.vis, p&&p.visLess);
+  $('#hCeil').textContent = ceilText(p);
+  $('#hAlt').textContent  = p&&p.altim!=null ? p.altim.toFixed(2)+'"' : '—';
+  $('#hTemp').textContent = p&&p.temp!=null ? `${p.temp}° / ${p.dewp==null?'—':p.dewp+'°'}` : '—';
+  const da = p ? densityAlt(CONFIG.home.elev, p.temp, p.altim) : null;
+  $('#hDa').textContent = da==null ? '—' : da.toLocaleString()+' ft';
+  $('#hRaw').textContent = p ? p.raw : '';
+}
+
+async function loadMetars(){
+  setStatus('Loading observations…');
+  const bbox = `${B[0]},${B[1]},${B[2]},${B[3]}`;
+  let data;
+  try{
+    data = await awc(`metar?bbox=${bbox}&format=json`);
+  }catch(e){
+    setStatus(`Could not reach aviationweather.gov (${e.message}). ` +
+      `AWC does not allow cross-origin browser requests — set <code>CONFIG.proxy</code>. ` +
+      `<button id="retry">Retry</button>`, true);
+    const rt = $('#retry'); if(rt) rt.onclick = loadMetars;
+    return;
+  }
+  if(!Array.isArray(data)) data = [data];
+
+  const seen = new Set();
+  for(const d of data){
+    const id = d.icaoId || d.station_id;
+    if(!id || seen.has(id)) continue;
+    seen.add(id);
+    const p = parseMetar(d.rawOb || d.rawText);
+    const stale = p && p.obsTime && ageMin(p.obsTime) > CONFIG.staleMin;
+    const st = stations.get(id) || { id };
+    st.lat  = d.lat ?? st.lat;
+    st.lon  = d.lon ?? st.lon;
+    st.name = d.name ? String(d.name).split(',')[0] : st.name;
+    st.elev = d.elev!=null ? d.elev*3.28084 : st.elev;
+    st.parsed = p;
+    st.cat = (!p || stale) ? 'NONE' : category(p);
+    st.dist = distNM(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
+    st.brg  = bearing(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
+    stations.set(id, st);
+  }
+  // drop stations that dropped off the feed entirely
+  for(const id of [...stations.keys()]) if(!seen.has(id)) stations.delete(id);
+
+  renderStations();
+  const t = new Date();
+  setStatus(`${seen.size} stations · updated ${pad(t.getHours())}:${pad(t.getMinutes())} local ` +
+    `· <button id="retry">Refresh</button>`);
+  const rt = $('#retry'); if(rt) rt.onclick = refreshAll;
+}
+
+/* ============================================================================
+   Winds aloft — Open-Meteo pressure levels. CORS is open here.
+   850 hPa ≈ 4,800 ft MSL (≈3,000 AGL over this terrain); 700 hPa ≈ 9,900 ft.
+   ========================================================================== */
+const WIND_LEVELS = { wind3k:{hpa:'850', label:'≈850 hPa / 4,800 ft'},
+                      wind10k:{hpa:'700', label:'≈700 hPa / 9,900 ft'} };
+let windLoaded = { wind3k:false, wind10k:false };
+
+function windGrid(n=5){
+  const pts=[];
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++)
+    pts.push([ B[0]+(B[2]-B[0])*(i+0.5)/n, B[1]+(B[3]-B[1])*(j+0.5)/n ]);
+  return pts;
+}
+
+async function loadWinds(key){
+  const lvl = WIND_LEVELS[key];
+  const pts = windGrid(5);
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + '?latitude='  + pts.map(p=>p[0].toFixed(3)).join(',')
+    + '&longitude=' + pts.map(p=>p[1].toFixed(3)).join(',')
+    + `&hourly=wind_speed_${lvl.hpa}hPa,wind_direction_${lvl.hpa}hPa,temperature_${lvl.hpa}hPa`
+    + '&wind_speed_unit=kn&forecast_days=1&timezone=UTC';
+  let js;
+  try{ const r = await fetch(url); js = await r.json(); }
+  catch(e){ setStatus('Winds aloft unavailable: '+e.message, true); return; }
+
+  const arr = Array.isArray(js) ? js : [js];
+  const hourIdx = (() => {
+    const now = new Date().toISOString().slice(0,13);
+    const times = arr[0].hourly.time;
+    const k = times.findIndex(t=>t.slice(0,13)===now);
+    return k>-1 ? k : 0;
+  })();
+
+  layers[key].clearLayers();
+  arr.forEach((g,n)=>{
+    const h = g.hourly;
+    const spd = Math.round(h[`wind_speed_${lvl.hpa}hPa`][hourIdx]);
+    const dir = Math.round(h[`wind_direction_${lvl.hpa}hPa`][hourIdx]);
+    const tmp = Math.round(h[`temperature_${lvl.hpa}hPa`][hourIdx]);
+    const html = `<svg width="80" height="80" viewBox="-40 -40 80 80">
+      ${barbSVG(dir,spd,null,'#8fd3e6')}
+      <text x="8" y="12" font-size="9">${spd}kt ${tmp}°</text></svg>`;
+    L.marker([pts[n][0],pts[n][1]],{
+      icon:L.divIcon({className:'windpt',html,iconSize:[80,80],iconAnchor:[40,40]}),
+      interactive:false
+    }).addTo(layers[key]);
+  });
+  windLoaded[key] = true;
+}
+
+/* ============================================================================
+   AIRMET / SIGMET
+   ========================================================================== */
+const HAZ_COLOR = { IFR:'#e8523f', MTN_OBSCN:'#c88a3a', TURB:'#e0b84a',
+                    ICE:'#7fc9ff', LLWS:'#e08ad0', CONVECTIVE:'#ff6a4d', ASH:'#b08bd6' };
+
+async function loadAirSig(){
+  let data;
+  try{ data = await awc('airsigmet?format=json'); }
+  catch(e){ setStatus('AIRMET/SIGMET unavailable: '+e.message, true); return; }
+  if(!Array.isArray(data)) data = [data];
+  layers.airsig.clearLayers();
+  let shown = 0;
+  for(const a of data){
+    const cs = a.coords || a.area;
+    if(!Array.isArray(cs) || cs.length < 3) continue;
+    const pts = cs.map(c=>[c.lat,c.lon]).filter(p=>p[0]!=null&&p[1]!=null);
+    if(pts.length<3) continue;
+    const poly = L.polygon(pts);
+    if(!poly.getBounds().intersects(REGION)) continue;
+    const color = HAZ_COLOR[a.hazard] || '#a9c4d2';
+    const lo = a.altitudeLow1 ?? a.altitudeLow2, hi = a.altitudeHi1 ?? a.altitudeHi2;
+    poly.setStyle({ color, weight:1.4, opacity:.9, fillColor:color, fillOpacity:.07, dashArray:'5 4' });
+    poly.bindPopup(`<div class="pop"><h2>${a.airSigmetType||'AIRMET'} · ${a.hazard||''}</h2>
+      <div class="sub">${a.severity?('severity '+a.severity+' · '):''}${lo!=null?lo.toLocaleString()+'–'+(hi?hi.toLocaleString():'')+' ft':''}</div>
+      <div class="raw">${(a.rawAirSigmet||'').replace(/\n/g,'<br>')}</div></div>`, {maxWidth:340});
+    poly.addTo(layers.airsig);
+    shown++;
+  }
+  if(!shown) setStatus('No AIRMET or SIGMET currently active in this region.');
+}
+
+/* ============================================================================
+   Controls
+   ========================================================================== */
+document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
+  btn.onclick = ()=>{
+    const key = btn.dataset.layer;
+    const on = btn.getAttribute('aria-pressed')==='true';
+    btn.setAttribute('aria-pressed', String(!on));
+    if(key==='terrain'){ on ? map.removeLayer(terrain) : terrain.addTo(map); return; }
+    if(key==='radar'){   on ? map.removeLayer(radar)   : radar.addTo(map);   return; }
+    if(key==='barbs'){   showBarbs = !on; renderStations(); return; }
+    if(key==='airsig'){
+      if(on){ map.removeLayer(layers.airsig); } else { layers.airsig.addTo(map); loadAirSig(); }
+      return;
+    }
+    if(key==='wind3k'||key==='wind10k'){
+      if(on){ map.removeLayer(layers[key]); }
+      else{ layers[key].addTo(map); if(!windLoaded[key]) loadWinds(key); }
+    }
+  };
+});
+$('#fitHome').onclick   = ()=> map.setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
+$('#fitRegion').onclick = ()=> map.fitBounds(REGION,{padding:[24,24]});
+$('#refresh').onclick   = refreshAll;
+$('#fs').onclick = ()=>{
+  if(document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(()=>{});
+};
+$('#homeToggle').onclick = e=>{
+  const c = $('#home').classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+};
+$('#obsToggle').onclick = e=>{
+  const c = $('#obs').classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+};
+
+function refreshAll(){
+  loadMetars();
+  for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
+  if(map.hasLayer(layers.airsig)) loadAirSig();
+  if(map.hasLayer(radar)) radar.setUrl(RADAR_TPL + '?_=' + Date.now());
+}
+
+loadMetars();
+setInterval(loadMetars, CONFIG.refreshMs);
+setInterval(renderHome, 60000);   // keep the age line honest between pulls
+</script>
+</body>
+</html>
