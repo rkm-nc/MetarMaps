@@ -158,7 +158,7 @@
 </nav>
 
 <aside id="obs">
-  <div id="obsHead"><strong>Nearby fields</strong><span id="obsCount"></span>
+  <div id="obsHead"><strong id="obsTitle">Nearby fields</strong><span id="obsCount"></span>
     <button id="obsToggle" title="Collapse">–</button></div>
   <div id="obsList"></div>
 </aside>
@@ -201,7 +201,16 @@ const CONFIG = {
   cartoKey: '',
 
   refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
-  staleMin: 90                // older than this = treated as no current data
+  staleMin: 90,               // older than this = treated as no current data
+
+  // Coverage behaviour.
+  //   followMap true  — stations are pulled for whatever you have panned to.
+  //                     The bbox above becomes only the opening view.
+  //   followMap false — the bbox above is the whole world, forever.
+  followMap: true,
+  maxSpanDeg: 14,             // widest lat/lon span ever requested; AWC caps a
+                              // response at 400 stations, so do not go wild
+  maxMarkers: 240             // above this, thin the display (see thinForZoom)
 };
 
 /* ---------- small helpers ---------- */
@@ -454,6 +463,27 @@ let showBarbs = true;
 L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,color:'#59d4e8',weight:1,
   opacity:.45,fill:false,dashArray:'3 5'}).addTo(map);   // 5 nm
 
+/* ---------- which patch of ground are we asking about ---------- */
+let lastFetched = null;   // bbox actually requested, so small pans do not refetch
+
+function currentBbox(){
+  if(!CONFIG.followMap) return B;
+  const b = map.getBounds().pad(0.10);
+  let s = b.getSouth(), w = b.getWest(), n = b.getNorth(), e = b.getEast();
+  const cy = (s+n)/2, cx = (w+e)/2, half = CONFIG.maxSpanDeg/2;
+  if(n-s > CONFIG.maxSpanDeg){ s = cy-half; n = cy+half; }
+  if(e-w > CONFIG.maxSpanDeg){ w = cx-half; e = cx+half; }
+  return [ +s.toFixed(2), +w.toFixed(2), +n.toFixed(2), +e.toFixed(2) ];
+}
+
+// True when the new view is already inside what we last asked for, with a
+// little margin. Panning within that needs no network call at all.
+function covered(bb){
+  if(!lastFetched) return false;
+  const [s,w,n,e] = bb, [S,W,N,E] = lastFetched;
+  return s >= S-0.01 && w >= W-0.01 && n <= N+0.01 && e <= E+0.01;
+}
+
 /* ---------- status ---------- */
 let statusEl = $('#status');
 function setStatus(html, isErr){
@@ -514,20 +544,49 @@ function popupHTML(st){
 
 function renderStations(){
   layers.stations.clearLayers();
-  const list = [...stations.values()].sort((a,b)=>(a.dist??1e9)-(b.dist??1e9));
-  for(const st of list){
+
+  // Sort from wherever the pilot is actually looking. Distances shown in the
+  // list and popups stay measured from K1A5, which is the useful frame.
+  const c = CONFIG.followMap ? map.getCenter() : L.latLng(CONFIG.home.lat, CONFIG.home.lon);
+  const all = [...stations.values()]
+    .map(st => ({ st, d: distNM(c.lat, c.lng, st.lat, st.lon) }))
+    .sort((a,b) => a.d - b.d)
+    .map(x => x.st);
+
+  const shown = thinForZoom(all);
+  for(const st of shown){
     const isHome = st.id === CONFIG.home.id;
     st.marker = L.marker([st.lat,st.lon],{ icon:stationIcon(st,isHome),
       zIndexOffset: isHome?1000:(st.cat==='NONE'?-100:0) })
       .bindPopup(()=>popupHTML(st), { maxWidth:320 })
       .addTo(layers.stations);
   }
-  renderList(list);
+  renderList(all, shown.length);
   renderHome();
 }
 
-function renderList(list){
-  const rows = list.slice(0,40).map(st=>{
+/* Too many markers at low zoom is not density, it is noise. Bucket stations
+   into screen-space cells and keep one per cell — the one in the WORST
+   condition. Thinning must never hide weather; it may only hide good news. */
+const CAT_RANK = { LIFR:4, IFR:3, MVFR:2, VFR:1, NONE:0 };
+function thinForZoom(list){
+  if(list.length <= CONFIG.maxMarkers) return list;
+  const cell = 52, keep = new Map();
+  let home = null;
+  for(const st of list){
+    if(st.id === CONFIG.home.id){ home = st; continue; }
+    const pt = map.latLngToContainerPoint([st.lat, st.lon]);
+    const k = Math.floor(pt.x/cell) + ':' + Math.floor(pt.y/cell);
+    const cur = keep.get(k);
+    if(!cur || CAT_RANK[st.cat] > CAT_RANK[cur.cat]) keep.set(k, st);
+  }
+  const out = [...keep.values()];
+  if(home) out.push(home);
+  return out;
+}
+
+function renderList(list, shownCount){
+  const rows = list.slice(0,60).map(st=>{
     const p = st.parsed;
     const det = st.cat==='NONE' ? 'no current observation'
       : `${windText(p)} · ${visText(p&&p.vis, p&&p.visLess)} · ${ceilText(p)}`;
@@ -539,7 +598,9 @@ function renderList(list){
     </div>`;
   }).join('');
   $('#obsList').innerHTML = rows || '<div class="row"><span></span><span class="det">Waiting for observations</span></div>';
-  $('#obsCount').textContent = list.length ? list.length+' reporting' : '';
+  $('#obsTitle').textContent = CONFIG.followMap ? 'Fields in view' : 'Nearby fields';
+  $('#obsCount').textContent = !list.length ? ''
+    : (shownCount < list.length ? `${shownCount} of ${list.length} shown` : `${list.length} reporting`);
   $('#obsList').querySelectorAll('.row').forEach(r=>{
     r.onclick = ()=>{ const st = stations.get(r.dataset.id); if(!st) return;
       map.setView([st.lat,st.lon], Math.max(map.getZoom(),10));
@@ -564,46 +625,73 @@ function renderHome(){
   $('#hRaw').textContent = p ? p.raw : '';
 }
 
-async function loadMetars(){
+let inflight = false;
+
+function ingest(d){
+  const id = d.icaoId || d.station_id;
+  if(!id) return null;
+  const p = parseMetar(d.rawOb || d.rawText);
+  const stale = p && p.obsTime && ageMin(p.obsTime) > CONFIG.staleMin;
+  const st = stations.get(id) || { id };
+  st.lat  = d.lat ?? st.lat;
+  st.lon  = d.lon ?? st.lon;
+  st.name = d.name ? String(d.name).split(',')[0] : st.name;
+  st.elev = d.elev!=null ? d.elev*3.28084 : st.elev;
+  st.parsed = p;
+  st.cat = (!p || stale) ? 'NONE' : category(p);
+  st.dist = distNM(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
+  st.brg  = bearing(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
+  stations.set(id, st);
+  return id;
+}
+
+async function loadMetars(force){
+  const bb = currentBbox();
+  if(!force && covered(bb)) return;          // already have this ground
+  if(inflight) return;
+  inflight = true;
   setStatus('Loading observations…');
-  const bbox = `${B[0]},${B[1]},${B[2]},${B[3]}`;
+
   let data;
   try{
-    data = await awc(`metar?bbox=${bbox}&format=json`);
+    data = await awc(`metar?bbox=${bb.join(',')}&format=json`);
   }catch(e){
+    inflight = false;
     setStatus(`Could not reach aviationweather.gov (${e.message}). ` +
       `AWC does not allow cross-origin browser requests — set <code>CONFIG.proxy</code>. ` +
       `<button id="retry">Retry</button>`, true);
-    const rt = $('#retry'); if(rt) rt.onclick = loadMetars;
+    const rt = $('#retry'); if(rt) rt.onclick = ()=>loadMetars(true);
     return;
   }
   if(!Array.isArray(data)) data = [data];
 
   const seen = new Set();
-  for(const d of data){
-    const id = d.icaoId || d.station_id;
-    if(!id || seen.has(id)) continue;
-    seen.add(id);
-    const p = parseMetar(d.rawOb || d.rawText);
-    const stale = p && p.obsTime && ageMin(p.obsTime) > CONFIG.staleMin;
-    const st = stations.get(id) || { id };
-    st.lat  = d.lat ?? st.lat;
-    st.lon  = d.lon ?? st.lon;
-    st.name = d.name ? String(d.name).split(',')[0] : st.name;
-    st.elev = d.elev!=null ? d.elev*3.28084 : st.elev;
-    st.parsed = p;
-    st.cat = (!p || stale) ? 'NONE' : category(p);
-    st.dist = distNM(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
-    st.brg  = bearing(CONFIG.home.lat, CONFIG.home.lon, st.lat, st.lon);
-    stations.set(id, st);
-  }
-  // drop stations that dropped off the feed entirely
-  for(const id of [...stations.keys()]) if(!seen.has(id)) stations.delete(id);
+  for(const d of data){ const id = ingest(d); if(id) seen.add(id); }
 
+  // Keep the home field even when it is off screen — the K1A5 card must never
+  // go blank just because you panned to Tennessee.
+  for(const id of [...stations.keys()])
+    if(!seen.has(id) && id !== CONFIG.home.id) stations.delete(id);
+
+  if(!seen.has(CONFIG.home.id)){
+    try{
+      let h = await awc(`metar?ids=${CONFIG.home.id}&format=json`);
+      if(!Array.isArray(h)) h = [h];
+      for(const d of h) ingest(d);
+    }catch(e){ /* card falls back to the last observation it had */ }
+  }
+
+  lastFetched = bb;
+  inflight = false;
   renderStations();
+  for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
+  if(map.hasLayer(layers.airsig)) loadAirSig();
+
   const t = new Date();
-  setStatus(`${seen.size} stations · updated ${pad(t.getHours())}:${pad(t.getMinutes())} local ` +
-    `· <button id="retry">Refresh</button>`);
+  const truncated = data.length >= 400
+    ? ' · <b>truncated at 400 by AWC — zoom in</b>' : '';
+  setStatus(`${seen.size} stations · updated ${pad(t.getHours())}:${pad(t.getMinutes())} local` +
+    truncated + ` · <button id="retry">Refresh</button>`);
   const rt = $('#retry'); if(rt) rt.onclick = refreshAll;
 }
 
@@ -616,9 +704,9 @@ const WIND_LEVELS = { wind3k:{hpa:'850', label:'≈850 hPa / 4,800 ft'},
 let windLoaded = { wind3k:false, wind10k:false };
 
 function windGrid(n=5){
-  const pts=[];
+  const g = currentBbox(), pts = [];
   for(let i=0;i<n;i++) for(let j=0;j<n;j++)
-    pts.push([ B[0]+(B[2]-B[0])*(i+0.5)/n, B[1]+(B[3]-B[1])*(j+0.5)/n ]);
+    pts.push([ g[0]+(g[2]-g[0])*(i+0.5)/n, g[1]+(g[3]-g[1])*(j+0.5)/n ]);
   return pts;
 }
 
@@ -678,7 +766,7 @@ async function loadAirSig(){
     const pts = cs.map(c=>[c.lat,c.lon]).filter(p=>p[0]!=null&&p[1]!=null);
     if(pts.length<3) continue;
     const poly = L.polygon(pts);
-    if(!poly.getBounds().intersects(REGION)) continue;
+    if(!poly.getBounds().intersects(CONFIG.followMap ? map.getBounds().pad(0.2) : REGION)) continue;
     const color = HAZ_COLOR[a.hazard] || '#a9c4d2';
     const lo = a.altitudeLow1 ?? a.altitudeLow2, hi = a.altitudeHi1 ?? a.altitudeHi2;
     poly.setStyle({ color, weight:1.4, opacity:.9, fillColor:color, fillOpacity:.07, dashArray:'5 4' });
@@ -715,7 +803,7 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     }
     if(key==='wind3k'||key==='wind10k'){
       if(on){ map.removeLayer(layers[key]); }
-      else{ layers[key].addTo(map); if(!windLoaded[key]) loadWinds(key); }
+      else{ layers[key].addTo(map); loadWinds(key); }
     }
   };
 });
@@ -735,15 +823,24 @@ $('#obsToggle').onclick = e=>{
   e.target.textContent = c ? '+' : '–';
 };
 
+let panTimer = null;
+map.on('moveend', ()=>{
+  renderStations();                               // re-sort and re-thin for the new view
+  if(!CONFIG.followMap) return;
+  clearTimeout(panTimer);
+  panTimer = setTimeout(()=>loadMetars(), 700);   // debounce: one fetch per pause
+});
+map.on('zoomend', renderStations);                // re-thin for the new scale
+
 function refreshAll(){
-  loadMetars();
+  loadMetars(true);
   for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
   if(map.hasLayer(layers.airsig)) loadAirSig();
   if(map.hasLayer(radar)) radar.setUrl(RADAR_TPL + '?_=' + Date.now());
 }
 
-loadMetars();
-setInterval(loadMetars, CONFIG.refreshMs);
+loadMetars(true);
+setInterval(()=>loadMetars(true), CONFIG.refreshMs);
 setInterval(renderHome, 60000);   // keep the age line honest between pulls
 </script>
 </body>
