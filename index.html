@@ -196,6 +196,10 @@ const CONFIG = {
   // The target URL is appended, URI-encoded.
   proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
+  // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
+  // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
+  cartoKey: '',
+
   refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
   staleMin: 90                // older than this = treated as no current data
 };
@@ -413,12 +417,26 @@ const map = L.map('map',{ zoomControl:false, attributionControl:false, worldCopy
   minZoom:5, maxZoom:13 }).setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
 L.control.zoom({position:'topleft'}).addTo(map);
 
-const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  { subdomains:'abcd', maxZoom:19, attribution:'CARTO / OpenStreetMap' }).addTo(map);
+/* Base map. Esri Dark Gray Canvas: keyless, no signup, same minimal dark
+   cartography. CARTO's raster tiles began requiring an API key in August 2026
+   and stamp anonymous requests with a watermark — if you would rather use
+   CARTO, request a free key at carto.com/basemaps/apikey and put it in
+   CONFIG.cartoKey below. */
+const base = CONFIG.cartoKey
+  ? L.tileLayer(`https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CONFIG.cartoKey}`,
+      { subdomains:'abcd', maxZoom:19, attribution:'CARTO / OpenStreetMap' }).addTo(map)
+  : L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom:16, attribution:'Esri / OpenStreetMap' }).addTo(map);
 
 const terrain = L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
   { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' }).addTo(map);
+
+/* Place names and roads, drawn over the hillshade so terrain does not bury
+   them. Skipped when CARTO is in use, since its tiles already carry labels. */
+const labels = CONFIG.cartoKey ? null : L.tileLayer(
+  'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom:16, opacity:0.85, attribution:'Esri' }).addTo(map);
 
 const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 const radar = L.tileLayer(RADAR_TPL,
@@ -681,8 +699,15 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     const key = btn.dataset.layer;
     const on = btn.getAttribute('aria-pressed')==='true';
     btn.setAttribute('aria-pressed', String(!on));
-    if(key==='terrain'){ on ? map.removeLayer(terrain) : terrain.addTo(map); return; }
-    if(key==='radar'){   on ? map.removeLayer(radar)   : radar.addTo(map);   return; }
+    if(key==='terrain'){
+      if(on){ map.removeLayer(terrain); }
+      else  { terrain.addTo(map); if(labels) labels.bringToFront(); }
+      return;
+    }
+    if(key==='radar'){
+      if(on){ map.removeLayer(radar); } else { radar.addTo(map); radar.bringToFront(); }
+      return;
+    }
     if(key==='barbs'){   showBarbs = !on; renderStations(); return; }
     if(key==='airsig'){
       if(on){ map.removeLayer(layers.airsig); } else { layers.airsig.addTo(map); loadAirSig(); }
