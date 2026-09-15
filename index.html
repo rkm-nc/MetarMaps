@@ -1,6 +1,10 @@
+
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
+   R. McMahan
+   rkm-public@gmail.com
+
    One file. No build step, no server-side code. Two CDN files (Leaflet) and a
    handful of public weather feeds. Serve it from any static host.
 
@@ -35,11 +39,26 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
+     ?radar=1       NEXRAD base reflectivity, on at load.
+                    Default: off.
+
+     ?terrain=0     Shaded relief under the map. Terrain is part of the
+                    go/no-go at most fields in the southern Appalachians, so
+                    this is on unless you turn it off.
+                    Default: on.
+
+                    Both accept 1/0, on/off, true/false, yes/no. A bare flag
+                    with no value counts as on, so ?radar and ?radar=1 are the
+                    same thing. Either layer can still be toggled from the chip
+                    rail once the page is up; these only set the opening state.
+
    Examples:
      /MetarMaps/                        K1A5, the default
      /MetarMaps/?apt=KAVL               Asheville
      /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
+     /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
+     /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
    Bookmark the URL and the page comes up on that field every time. Handing a
    colleague a different link gives them their own tool, not yours.
@@ -64,6 +83,12 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
+     showRadar   Default for ?radar=.
+     showTerrain Default for ?terrain=.
+     markerScale Global size multiplier for the station glyphs, with
+     markerGrowth  markerGrowth controlling how fast they grow with zoom and
+     markerMin     markerMin/markerMax bounding the result.
+     markerMax
      refreshMs   Poll interval. AWC's limit is 100 requests per minute across
                  all clients, so five minutes is polite. Leave it alone.
      staleMin    Age past which an observation is drawn as no current data
@@ -89,8 +114,6 @@
    Raw METAR text is parsed here rather than trusting decoded fields, so the
    same code path serves any feed that returns a raw report.
    ========================================================================== */
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -185,8 +208,9 @@
   #status button{background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0 0 0 6px}
 
   /* ---- markers ---- */
-  .stn{background:none;border:0}
-  .stn svg{overflow:visible;display:block}
+  .stn{background:none;border:0;pointer-events:none}
+  .stn svg{overflow:visible;display:block;pointer-events:none}
+  .stn .hit{pointer-events:auto;cursor:pointer}
   .stn .lbl{font:600 9px/1 var(--mono);fill:var(--ink);paint-order:stroke;
     stroke:#091720;stroke-width:2.5px;stroke-linejoin:round}
   .stn.home .ring{stroke:var(--accent);stroke-width:1.6;fill:none}
@@ -307,11 +331,26 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
+     ?radar=1       NEXRAD base reflectivity, on at load.
+                    Default: off.
+
+     ?terrain=0     Shaded relief under the map. Terrain is part of the
+                    go/no-go at most fields in the southern Appalachians, so
+                    this is on unless you turn it off.
+                    Default: on.
+
+                    Both accept 1/0, on/off, true/false, yes/no. A bare flag
+                    with no value counts as on, so ?radar and ?radar=1 are the
+                    same thing. Either layer can still be toggled from the chip
+                    rail once the page is up; these only set the opening state.
+
    Examples:
      /MetarMaps/                        K1A5, the default
      /MetarMaps/?apt=KAVL               Asheville
      /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
+     /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
+     /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
    Bookmark the URL and the page comes up on that field every time. Handing a
    colleague a different link gives them their own tool, not yours.
@@ -336,6 +375,12 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
+     showRadar   Default for ?radar=.
+     showTerrain Default for ?terrain=.
+     markerScale Global size multiplier for the station glyphs, with
+     markerGrowth  markerGrowth controlling how fast they grow with zoom and
+     markerMin     markerMin/markerMax bounding the result.
+     markerMax
      refreshMs   Poll interval. AWC's limit is 100 requests per minute across
                  all clients, so five minutes is polite. Leave it alone.
      staleMin    Age past which an observation is drawn as no current data
@@ -398,7 +443,22 @@ const CONFIG = {
 
   maxSpanDeg: 14,             // widest box ever requested, however far you zoom
                               // out; AWC truncates any response at 400 stations
-  maxMarkers: 240             // above this, thin the display (see thinForZoom)
+  maxMarkers: 240,            // above this, thin the display (see thinForZoom)
+
+  // Opening state of the two optional map layers. Defaults for ?radar= and
+  // ?terrain=. Either can still be toggled from the chip rail at any time.
+  showRadar:   false,
+  showTerrain: true,
+
+  // Marker size. The whole station glyph — dot, barb, weather symbol and
+  // identifier — is drawn from one SVG, so a single multiplier scales all of
+  // it together. markerScale is a global nudge; markerGrowth is how much the
+  // glyph gains per zoom level above 9, which is what keeps stations legible
+  // when the map spreads out and the field thins.
+  markerScale:  1.0,
+  markerGrowth: 0.17,
+  markerMin:    0.85,
+  markerMax:    1.85
 };
 
 /* ---------- small helpers ---------- */
@@ -607,6 +667,11 @@ function wxGlyph(p,color){
 /* ============================================================================
    Map
    ========================================================================== */
+/* Arguments are read here, before any layer is built, so ?radar= and ?terrain=
+   can decide the opening state rather than switching things on after the fact.
+   Function declarations hoist, so readArgs is available this far up the file. */
+const ARG_APT = readArgs();
+
 /* The opening box is derived from wherever home turns out to be. Longitude
    degrees shrink with latitude, so widen them by 1/cos(lat) to keep the view
    roughly square on the ground. */
@@ -636,17 +701,20 @@ const base = CONFIG.cartoKey
 
 const terrain = L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' }).addTo(map);
+  { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' });
+if(CONFIG.showTerrain) terrain.addTo(map);
 
 /* Place names and roads, drawn over the hillshade so terrain does not bury
    them. Skipped when CARTO is in use, since its tiles already carry labels. */
 const labels = CONFIG.cartoKey ? null : L.tileLayer(
   'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   { maxZoom:16, opacity:0.85, attribution:'Esri' }).addTo(map);
+if(labels && CONFIG.showTerrain) labels.bringToFront();
 
 const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 const radar = L.tileLayer(RADAR_TPL,
   { opacity:0.55, maxZoom:13, attribution:'NOAA / NWS via Iowa State Mesonet' });
+if(CONFIG.showRadar){ radar.addTo(map); radar.bringToFront(); }
 
 const layers = {
   stations : L.layerGroup().addTo(map),
@@ -705,18 +773,33 @@ async function awc(path){
    ========================================================================== */
 let stations = new Map();   // id -> {lat,lon,name,parsed,cat,marker,dist,brg}
 
+/* Station glyphs are drawn at a fixed pixel size by default, which is the
+   wrong behaviour at high zoom: the map spreads out, the reporting fields
+   thin, and the dots stay small and lost. Scale the whole glyph with zoom
+   instead, anchored so that zoom 9 is unchanged from the original size. */
+function iconScale(){
+  const z = map.getZoom();
+  const k = CONFIG.markerScale * (1 + (z - 9) * CONFIG.markerGrowth);
+  return Math.max(CONFIG.markerMin, Math.min(CONFIG.markerMax, k));
+}
+
 function stationIcon(st, isHome){
   const color = CAT_COLOR[st.cat];
   const p = st.parsed;
   const barb = (showBarbs && st.cat!=='NONE') ? barbSVG(p&&p.wdir, p&&p.wspd, p&&p.wgst, color) : '';
   const ring = isHome ? `<circle class="ring" cx="0" cy="0" r="9.5"/>` : '';
-  const html = `<svg width="92" height="92" viewBox="-46 -46 92 92">
+  // The viewBox stays fixed and the rendered size changes, so one number
+  // scales dot, barb, weather glyph, label and stroke weights together.
+  const px = Math.round(92 * iconScale());
+  const html = `<svg width="${px}" height="${px}" viewBox="-46 -46 92 92">
     <g>${barb}${ring}
       <circle cx="0" cy="0" r="5.4" fill="${color}" stroke="#091720" stroke-width="1.2"/>
       ${wxGlyph(p,color)}
       <text class="lbl" x="9" y="4">${st.id.replace(/^K/,'')}</text>
+      <circle class="hit" cx="0" cy="0" r="13" fill="transparent"/>
     </g></svg>`;
-  return L.divIcon({ className:'stn'+(isHome?' home':''), html, iconSize:[92,92], iconAnchor:[46,46] });
+  return L.divIcon({ className:'stn'+(isHome?' home':''), html,
+                     iconSize:[px,px], iconAnchor:[px/2,px/2] });
 }
 
 function popupHTML(st){
@@ -768,7 +851,7 @@ function renderStations(){
 const CAT_RANK = { LIFR:4, IFR:3, MVFR:2, VFR:1, NONE:0 };
 function thinForZoom(list){
   if(list.length <= CONFIG.maxMarkers) return list;
-  const cell = 52, keep = new Map();
+  const cell = Math.round(52 * iconScale()), keep = new Map();
   let home = null;
   for(const st of list){
     if(st.id === CONFIG.home.id){ home = st; continue; }
@@ -986,11 +1069,13 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     const on = btn.getAttribute('aria-pressed')==='true';
     btn.setAttribute('aria-pressed', String(!on));
     if(key==='terrain'){
+      CONFIG.showTerrain = !on;
       if(on){ map.removeLayer(terrain); }
       else  { terrain.addTo(map); if(labels) labels.bringToFront(); }
       return;
     }
     if(key==='radar'){
+      CONFIG.showRadar = !on;
       if(on){ map.removeLayer(radar); } else { radar.addTo(map); radar.bringToFront(); }
       return;
     }
@@ -1005,6 +1090,19 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     }
   };
 });
+// The chip rail is the single visible record of what is on. Drive it from the
+// resolved arguments so a linked URL and the buttons never disagree.
+function syncChips(){
+  const set = (k,v) => {
+    const b = document.querySelector(`.chip[data-layer="${k}"]`);
+    if(b) b.setAttribute('aria-pressed', String(v));
+  };
+  set('terrain', CONFIG.showTerrain);
+  set('radar',   CONFIG.showRadar);
+  set('barbs',   showBarbs);
+}
+syncChips();
+
 $('#fitHome').onclick   = ()=> map.setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
 $('#fitRegion').onclick = ()=> map.fitBounds(REGION,{padding:[24,24]});
 $('#refresh').onclick   = refreshAll;
@@ -1050,13 +1148,26 @@ function normalizeIdent(raw){
   return null;                              // anything else is not an identifier
 }
 
+/* 1/0, on/off, true/false, yes/no. A bare flag with no value reads as on, so
+   ?radar and ?radar=1 mean the same thing. Anything unrecognized falls back to
+   the configured default rather than guessing. */
+function argBool(v, dflt){
+  if(v == null) return dflt;
+  const t = String(v).trim().toLowerCase();
+  if(t === '' || ['1','on','true','yes','y'].includes(t)) return true;
+  if(['0','off','false','no','n'].includes(t)) return false;
+  return dflt;
+}
+
 function readArgs(){
   const q = new URLSearchParams(location.search);
   const span = parseFloat(q.get('span'));
   const zoom = parseInt(q.get('zoom'), 10);
   if(span > 0.2 && span < 12) CONFIG.spanDeg  = span;
   if(zoom >= 5 && zoom <= 13) CONFIG.homeZoom = zoom;
-  if(q.get('follow') === '0') CONFIG.followMap = false;
+  CONFIG.followMap   = argBool(q.get('follow'),  CONFIG.followMap);
+  CONFIG.showRadar   = argBool(q.get('radar'),   CONFIG.showRadar);
+  CONFIG.showTerrain = argBool(q.get('terrain'), CONFIG.showTerrain);
   return normalizeIdent(q.get('apt'));
 }
 
@@ -1099,7 +1210,7 @@ function applyHome(h){
 }
 
 async function boot(){
-  const asked = readArgs();
+  const asked = ARG_APT;
   if(asked && asked !== CONFIG.home.id){
     setStatus(`Looking up ${asked}…`);
     let found = null;
