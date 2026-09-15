@@ -1,10 +1,8 @@
-
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
    R. McMahan
    rkm-public@gmail.com
-
    One file. No build step, no server-side code. Two CDN files (Leaflet) and a
    handful of public weather feeds. Serve it from any static host.
 
@@ -39,6 +37,32 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
+     ?base=light    Background map. What governs legibility here is SATURATION,
+                    not lightness: the five category colours must be the only
+                    saturated things on the screen. Any neutral base works.
+
+                      dark     Esri Dark Gray Canvas. Keyless. The default.
+                      light    Esri Light Gray Canvas. Keyless. Same
+                               cartography inverted; better in a bright cockpit
+                               or on a projector.
+                      relief   USGS shaded relief from 3DEP. Keyless, federal,
+                               near-grayscale, no labels of its own. The best
+                               choice at a mountain field: terrain is the
+                               basemap rather than an overlay.
+                      topo     USGS topographic quads. Keyless. Contours and
+                               place detail, but coloured, so the dots fight it.
+                      imagery  Esri World Imagery. Keyless. Saturated greens
+                               and browns; the VFR green suffers. Handsome,
+                               not legible.
+                      osm      OpenStreetMap standard. Keyless, but their tile
+                               usage policy is for light traffic only, and the
+                               colour competes with the dots.
+                      carto    CARTO Dark Matter. Requires CONFIG.cartoKey.
+
+                    The hillshade defaults off over relief, topo and imagery,
+                    which already carry terrain. ?terrain=1 forces it back.
+                    Default: dark.
+
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
@@ -58,6 +82,8 @@
      /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
+     /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
    Bookmark the URL and the page comes up on that field every time. Handing a
@@ -83,6 +109,8 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
+     basemap     Default for ?base=. The catalogue itself is the BASEMAPS
+                 table further down; add an entry there to offer another.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
      markerScale Global size multiplier for the station glyphs, with
@@ -114,6 +142,7 @@
    Raw METAR text is parsed here rather than trusting decoded fields, so the
    same code path serves any feed that returns a raw report.
    ========================================================================== */
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -129,6 +158,7 @@
     --ink:#d6e7f0; --ink-dim:#7f9aa8; --ink-faint:#5b7382;
     --vfr:#39c46e; --mvfr:#3d9be9; --ifr:#e8523f; --lifr:#c25ad6; --none:#64798a;
     --accent:#59d4e8;
+    --halo:#091720;   /* outline behind marker labels; flips on a light base */
     --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
     --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
@@ -212,7 +242,9 @@
   .stn svg{overflow:visible;display:block;pointer-events:none}
   .stn .hit{pointer-events:auto;cursor:pointer}
   .stn .lbl{font:600 9px/1 var(--mono);fill:var(--ink);paint-order:stroke;
-    stroke:#091720;stroke-width:2.5px;stroke-linejoin:round}
+    stroke:var(--halo);stroke-width:2.5px;stroke-linejoin:round}
+  body.lightbase .stn .lbl{fill:#0b1d27}
+  body.lightbase #map{background:#e8ecef}
   .stn.home .ring{stroke:var(--accent);stroke-width:1.6;fill:none}
 
   .leaflet-popup-content-wrapper{background:#0d2632;color:var(--ink);border:1px solid var(--line);
@@ -229,7 +261,9 @@
 
   .windpt{background:none;border:0}
   .windpt svg{overflow:visible}
-  .windpt text{font:600 9px/1 var(--mono);fill:#bcd6e2;paint-order:stroke;stroke:#091720;stroke-width:2.5px}
+  .windpt text{font:600 9px/1 var(--mono);fill:#bcd6e2;paint-order:stroke;
+    stroke:var(--halo);stroke-width:2.5px}
+  body.lightbase .windpt text{fill:#14425a}
 
   .sig{font:600 10px/1 var(--sans)}
   @media (max-width:620px){
@@ -288,6 +322,7 @@
   <span><i style="background:var(--lifr)"></i>LIFR</span>
   <span><i style="background:var(--none)"></i>No current data</span>
   <span>Barb: half 5 · full 10 · pennant 50 kt</span>
+  <span id="attrib" style="color:var(--ink-faint)"></span>
 </div>
 
 <div id="status">Connecting to airport weather…</div>
@@ -331,6 +366,32 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
+     ?base=light    Background map. What governs legibility here is SATURATION,
+                    not lightness: the five category colours must be the only
+                    saturated things on the screen. Any neutral base works.
+
+                      dark     Esri Dark Gray Canvas. Keyless. The default.
+                      light    Esri Light Gray Canvas. Keyless. Same
+                               cartography inverted; better in a bright cockpit
+                               or on a projector.
+                      relief   USGS shaded relief from 3DEP. Keyless, federal,
+                               near-grayscale, no labels of its own. The best
+                               choice at a mountain field: terrain is the
+                               basemap rather than an overlay.
+                      topo     USGS topographic quads. Keyless. Contours and
+                               place detail, but coloured, so the dots fight it.
+                      imagery  Esri World Imagery. Keyless. Saturated greens
+                               and browns; the VFR green suffers. Handsome,
+                               not legible.
+                      osm      OpenStreetMap standard. Keyless, but their tile
+                               usage policy is for light traffic only, and the
+                               colour competes with the dots.
+                      carto    CARTO Dark Matter. Requires CONFIG.cartoKey.
+
+                    The hillshade defaults off over relief, topo and imagery,
+                    which already carry terrain. ?terrain=1 forces it back.
+                    Default: dark.
+
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
@@ -350,6 +411,8 @@
      /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
+     /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
    Bookmark the URL and the page comes up on that field every time. Handing a
@@ -375,6 +438,8 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
+     basemap     Default for ?base=. The catalogue itself is the BASEMAPS
+                 table further down; add an entry there to offer another.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
      markerScale Global size multiplier for the station glyphs, with
@@ -431,7 +496,7 @@ const CONFIG = {
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
   cartoKey: '',
 
-  refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
+  refreshMs: 2 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
   staleMin: 90,               // older than this = treated as no current data
 
   // Coverage behaviour. Default for ?follow=.
@@ -444,6 +509,10 @@ const CONFIG = {
   maxSpanDeg: 14,             // widest box ever requested, however far you zoom
                               // out; AWC truncates any response at 400 stations
   maxMarkers: 240,            // above this, thin the display (see thinForZoom)
+
+  // Background map. Default for ?base=. See the BASEMAPS catalogue below for
+  // the full set. What governs legibility is saturation, not lightness.
+  basemap: 'dark',
 
   // Opening state of the two optional map layers. Defaults for ?radar= and
   // ?terrain=. Either can still be toggled from the chip rail at any time.
@@ -667,9 +736,57 @@ function wxGlyph(p,color){
 /* ============================================================================
    Map
    ========================================================================== */
-/* Arguments are read here, before any layer is built, so ?radar= and ?terrain=
-   can decide the opening state rather than switching things on after the fact.
-   Function declarations hoist, so readArgs is available this far up the file. */
+
+/* ----------------------------------------------------------------------------
+   Basemap catalogue. Selected with ?base=. What matters for legibility is
+   SATURATION, not lightness: the five category colours have to be the only
+   saturated things on the screen. Any neutral base works, light or dark; a
+   colourful one does not, however pretty it is.
+   `dark` drives the label halo and the marker outline. `ref` is a separate
+   labels layer for bases that ship without their own. `relief` marks a base
+   that already carries terrain, so the hillshade defaults off over it.
+   -------------------------------------------------------------------------- */
+const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services';
+const USGS = 'https://basemap.nationalmap.gov/arcgis/rest/services';
+
+const BASEMAPS = {
+  dark: { name:'Esri Dark Gray Canvas', dark:true, maxZoom:16,
+    url:`${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+    ref:`${ESRI}/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}`,
+    attr:'Esri, OpenStreetMap' },
+
+  light: { name:'Esri Light Gray Canvas', dark:false, maxZoom:16,
+    url:`${ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+    ref:`${ESRI}/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}`,
+    attr:'Esri, OpenStreetMap' },
+
+  relief: { name:'USGS shaded relief', dark:false, maxZoom:16, terrain:true,
+    url:`${USGS}/USGSShadedReliefOnly/MapServer/tile/{z}/{y}/{x}`,
+    ref:`${ESRI}/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}`,
+    attr:'USGS 3DEP, Esri' },
+
+  topo: { name:'USGS topographic', dark:false, maxZoom:16, terrain:true,
+    url:`${USGS}/USGSTopo/MapServer/tile/{z}/{y}/{x}`, ref:null,
+    attr:'USGS The National Map' },
+
+  imagery: { name:'Esri World Imagery', dark:true, maxZoom:16, terrain:true,
+    url:`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
+    ref:`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`,
+    attr:'Esri, Maxar, USGS' },
+
+  osm: { name:'OpenStreetMap', dark:false, maxZoom:17,
+    url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', ref:null,
+    attr:'OpenStreetMap contributors' },
+
+  carto: { name:'CARTO Dark Matter', dark:true, maxZoom:19, sub:'abcd', key:true,
+    url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    ref:null, attr:'CARTO, OpenStreetMap' }
+};
+
+/* Arguments are read before anything is built — before the box, before the
+   map, before a single layer — so ?base=, ?span=, ?zoom=, ?radar= and
+   ?terrain= all decide the opening state rather than correcting it afterwards.
+   readArgs reads BASEMAPS, which is why the catalogue sits above this line. */
 const ARG_APT = readArgs();
 
 /* The opening box is derived from wherever home turns out to be. Longitude
@@ -688,16 +805,18 @@ const map = L.map('map',{ zoomControl:false, attributionControl:false, worldCopy
   minZoom:5, maxZoom:13 }).setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
 L.control.zoom({position:'topleft'}).addTo(map);
 
-/* Base map. Esri Dark Gray Canvas: keyless, no signup, same minimal dark
-   cartography. CARTO's raster tiles began requiring an API key in August 2026
-   and stamp anonymous requests with a watermark — if you would rather use
-   CARTO, request a free key at carto.com/basemaps/apikey and put it in
-   CONFIG.cartoKey below. */
-const base = CONFIG.cartoKey
-  ? L.tileLayer(`https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CONFIG.cartoKey}`,
-      { subdomains:'abcd', maxZoom:19, attribution:'CARTO / OpenStreetMap' }).addTo(map)
-  : L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom:16, attribution:'Esri / OpenStreetMap' }).addTo(map);
+
+const BM = BASEMAPS[CONFIG.basemap] || BASEMAPS.dark;
+if(!BM.dark){
+  document.body.classList.add('lightbase');
+  document.documentElement.style.setProperty('--halo', '#ffffff');
+}
+const HALO = BM.dark ? '#091720' : '#ffffff';
+
+const base = L.tileLayer(
+  BM.key && CONFIG.cartoKey ? BM.url + '?key=' + CONFIG.cartoKey : BM.url,
+  { maxZoom:BM.maxZoom, subdomains:BM.sub || 'abc', attribution:BM.attr }).addTo(map);
+$('#attrib').textContent = BM.attr;
 
 const terrain = L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
@@ -705,10 +824,10 @@ const terrain = L.tileLayer(
 if(CONFIG.showTerrain) terrain.addTo(map);
 
 /* Place names and roads, drawn over the hillshade so terrain does not bury
-   them. Skipped when CARTO is in use, since its tiles already carry labels. */
-const labels = CONFIG.cartoKey ? null : L.tileLayer(
-  'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom:16, opacity:0.85, attribution:'Esri' }).addTo(map);
+   them. Bases that carry their own labels get none. */
+const labels = BM.ref
+  ? L.tileLayer(BM.ref, { maxZoom:BM.maxZoom, opacity:0.85 }).addTo(map)
+  : null;
 if(labels && CONFIG.showTerrain) labels.bringToFront();
 
 const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
@@ -793,7 +912,7 @@ function stationIcon(st, isHome){
   const px = Math.round(92 * iconScale());
   const html = `<svg width="${px}" height="${px}" viewBox="-46 -46 92 92">
     <g>${barb}${ring}
-      <circle cx="0" cy="0" r="5.4" fill="${color}" stroke="#091720" stroke-width="1.2"/>
+      <circle cx="0" cy="0" r="5.4" fill="${color}" stroke="${HALO}" stroke-width="1.2"/>
       ${wxGlyph(p,color)}
       <text class="lbl" x="9" y="4">${st.id.replace(/^K/,'')}</text>
       <circle class="hit" cx="0" cy="0" r="13" fill="transparent"/>
@@ -1167,7 +1286,16 @@ function readArgs(){
   if(zoom >= 5 && zoom <= 13) CONFIG.homeZoom = zoom;
   CONFIG.followMap   = argBool(q.get('follow'),  CONFIG.followMap);
   CONFIG.showRadar   = argBool(q.get('radar'),   CONFIG.showRadar);
-  CONFIG.showTerrain = argBool(q.get('terrain'), CONFIG.showTerrain);
+
+  const b = String(q.get('base')||'').trim().toLowerCase();
+  if(b && BASEMAPS[b]) CONFIG.basemap = b;
+
+  // Bases that already carry relief do not want the hillshade on top of them,
+  // unless the URL asks for it explicitly.
+  const baseHasTerrain = !!(BASEMAPS[CONFIG.basemap] || {}).terrain;
+  CONFIG.showTerrain = argBool(q.get('terrain'),
+    baseHasTerrain ? false : CONFIG.showTerrain);
+
   return normalizeIdent(q.get('apt'));
 }
 
@@ -1221,9 +1349,12 @@ async function boot(){
       const rt = $('#retry'); if(rt) rt.onclick = boot;
       return;
     }
-    if(found) applyHome(found);
-    else setStatus(`No station found for <b>${asked}</b> — showing ` +
-      `${CONFIG.home.id} instead. Check the identifier.`, true);
+    if(found){ applyHome(found); }
+    else{
+      applyHome(CONFIG.home);
+      setStatus(`No station found for <b>${asked}</b> — showing ` +
+        `${CONFIG.home.id} instead. Check the identifier.`, true);
+    }
   } else if(asked === CONFIG.home.id){
     // Named the default explicitly; still resolve it so elevation is AWC's
     // number rather than one typed into this file years ago.
