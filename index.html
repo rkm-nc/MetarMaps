@@ -3,6 +3,7 @@
    ----------------------------------------------------------------------------
    R. McMahan
    rkm-public@gmail.com
+
    One file. No build step, no server-side code. Two CDN files (Leaflet) and a
    handful of public weather feeds. Serve it from any static host.
 
@@ -295,7 +296,7 @@
 </section>
 
 <nav id="rail" aria-label="Map layers">
-  <button class="chip" id="fitHome">Fit K1A5</button>
+  <button class="chip" id="fitHome">Fit Home</button>
   <button class="chip" id="fitRegion">Fit region</button>
   <div class="rail-gap"></div>
   <button class="chip" data-layer="terrain" aria-pressed="true">Terrain</button>
@@ -490,13 +491,13 @@ const CONFIG = {
   // your own relay (see worker.js), e.g.
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
-  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
+    proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
   cartoKey: '',
 
-  refreshMs: 2 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
+  refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
   staleMin: 90,               // older than this = treated as no current data
 
   // Coverage behaviour. Default for ?follow=.
@@ -525,9 +526,9 @@ const CONFIG = {
   // glyph gains per zoom level above 9, which is what keeps stations legible
   // when the map spreads out and the field thins.
   markerScale:  1.0,
-  markerGrowth: 0.30,         //0.17,
-  markerMin:    1.00,         //0.85,
-  markerMax:    2.00         //1.85
+  markerGrowth: 0.17,
+  markerMin:    0.85,
+  markerMax:    1.85
 };
 
 /* ---------- small helpers ---------- */
@@ -1332,6 +1333,11 @@ function applyHome(h){
   map.setView([h.lat, h.lon], CONFIG.homeZoom);
 
   const elev = h.elev == null ? '' : ' · ' + Math.round(h.elev).toLocaleString() + ' ft';
+  // The chip names the field it returns you to, so it reads as a reset rather
+  // than a generic recenter. Stays "Fit Home" until the field is resolved.
+  $('#fitHome').textContent = 'Fit ' + h.id;
+  $('#fitHome').title = `Recenter on ${h.id} at zoom ${CONFIG.homeZoom}`;
+
   $('#hId').textContent    = h.id;
   $('#hWhere').textContent = [h.name, h.city].filter(Boolean).join(' · ') + elev;
   document.title = `${h.id} · METAR map`;
