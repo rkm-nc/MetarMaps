@@ -1,3 +1,96 @@
+/* ============================================================================
+   MetarMaps — live regional METAR map
+   ----------------------------------------------------------------------------
+   One file. No build step, no server-side code. Two CDN files (Leaflet) and a
+   handful of public weather feeds. Serve it from any static host.
+
+   Reference and planning only. Not for navigation.
+
+   ----------------------------------------------------------------------------
+   INVOCATION — the query string is the argument list
+   ----------------------------------------------------------------------------
+   This runs over HTTP, so options arrive in the URL. Nothing about the home
+   field is hardcoded: its coordinates, elevation and site name are resolved
+   against the Aviation Weather Center at startup, which is what makes density
+   altitude correct for whatever field is named.
+
+     ?apt=KAVL      Home field. ICAO or FAA identifier, case insensitive.
+                    Three characters take a K prefix, so 1a5, rhp and 24a all
+                    resolve. Four characters pass through, so CYYZ and PANC
+                    work. Anything else is rejected rather than guessed at.
+                    An identifier that resolves to nothing leaves the map on
+                    the fallback field and says so, rather than silently
+                    showing the wrong airport.
+                    Default: K1A5 (Macon County, Franklin, NC).
+
+     ?span=2.5      Half-width of the opening view, in degrees of latitude.
+                    Accepted range 0.2 to 12. Longitude is widened by
+                    1/cos(lat) so the box stays roughly square on the ground.
+                    Default: 1.7, about 200 nm across at these latitudes.
+
+     ?zoom=10       Opening zoom level. Accepted range 5 to 13.
+                    Default: 9.
+
+     ?follow=0      Pins the map to the opening box. Without this the station
+                    set follows wherever you pan, one request per pause.
+                    Default: follow pans.
+
+   Examples:
+     /MetarMaps/                        K1A5, the default
+     /MetarMaps/?apt=KAVL               Asheville
+     /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
+     /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
+
+   Bookmark the URL and the page comes up on that field every time. Handing a
+   colleague a different link gives them their own tool, not yours.
+
+   ----------------------------------------------------------------------------
+   CONFIG — settings that belong to the deployment, not the invocation
+   ----------------------------------------------------------------------------
+   These are edited in the file below because they are properties of how and
+   where the page is hosted. They are not exposed in the URL on purpose: a
+   query string is for what a pilot chooses, not for what an administrator
+   configured once.
+
+     proxy       The one setting most deployments must change. AWC does not
+                 permit cross-origin browser requests, so a browser will
+                 normally block a direct call. Point this at your own relay
+                 (see worker.js). Leave empty to try AWC directly first.
+     cartoKey    Optional. CARTO began requiring an API key on their raster
+                 basemaps in August 2026. Empty means the keyless Esri dark
+                 base map is used, which is the default and needs no account.
+     home        Fallback field. Used only when no ?apt= is supplied, and when
+                 a supplied identifier cannot be resolved.
+     spanDeg     Default for ?span=.
+     homeZoom    Default for ?zoom=.
+     followMap   Default for ?follow=.
+     refreshMs   Poll interval. AWC's limit is 100 requests per minute across
+                 all clients, so five minutes is polite. Leave it alone.
+     staleMin    Age past which an observation is drawn as no current data
+                 rather than in its last category. A stale green dot over a
+                 field that went IFR two hours ago is the failure that hurts
+                 someone, so this is deliberately conservative.
+     maxSpanDeg  Widest box ever requested, however far you zoom out. AWC
+                 truncates any response at 400 stations; the status bar says
+                 so when that happens.
+     maxMarkers  Above this count the display thins: stations are bucketed
+                 into screen cells and one is kept per cell, always the one in
+                 the WORST condition. Thinning may hide good news. It must
+                 never hide weather.
+
+   ----------------------------------------------------------------------------
+   DATA
+   ----------------------------------------------------------------------------
+     METAR, AIRMET/SIGMET  NOAA / Aviation Weather Center   needs the proxy
+     Winds aloft           Open-Meteo pressure levels       cross-origin open
+     Radar                 NOAA NEXRAD via Iowa State       tiles, no key
+     Terrain, base, labels Esri / USGS                      tiles, no key
+
+   Raw METAR text is parsed here rather than trusting decoded fields, so the
+   same code path serves any feed that returns a raw report.
+   ========================================================================== */
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -42,6 +135,7 @@
     background:var(--panel);border:1px solid var(--line);border-radius:4px;backdrop-filter:blur(10px);
     padding:12px 14px 11px}
   #home h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.02em}
+  #home h1 b{font-weight:600}
   #home h1 span{color:var(--ink-faint);font-weight:400}
   #home .cat{display:flex;align-items:baseline;gap:9px;margin:9px 0 2px}
   #home .catword{font-size:31px;font-weight:700;line-height:.95;letter-spacing:-.02em}
@@ -129,7 +223,7 @@
 
 <section id="home" aria-live="polite">
   <button id="homeToggle" title="Collapse">–</button>
-  <h1>K1A5 <span>Macon County · Franklin, NC · 2,034 ft</span></h1>
+  <h1><b id="hId">K1A5</b> <span id="hWhere">Macon County · Franklin, NC · 2,034 ft</span></h1>
   <div class="cat"><div class="catword" id="hCat">…</div><div class="catsub" id="hAge">connecting</div></div>
   <div class="grid">
     <div><span>Wind</span><b id="hWind">–</b></div>
@@ -177,23 +271,115 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 /* ============================================================================
-   K1A5 regional METAR map
-   Single file. Edit CONFIG and nothing else to re-home it on another field.
+   MetarMaps — live regional METAR map
+   ----------------------------------------------------------------------------
+   One file. No build step, no server-side code. Two CDN files (Leaflet) and a
+   handful of public weather feeds. Serve it from any static host.
+
+   Reference and planning only. Not for navigation.
+
+   ----------------------------------------------------------------------------
+   INVOCATION — the query string is the argument list
+   ----------------------------------------------------------------------------
+   This runs over HTTP, so options arrive in the URL. Nothing about the home
+   field is hardcoded: its coordinates, elevation and site name are resolved
+   against the Aviation Weather Center at startup, which is what makes density
+   altitude correct for whatever field is named.
+
+     ?apt=KAVL      Home field. ICAO or FAA identifier, case insensitive.
+                    Three characters take a K prefix, so 1a5, rhp and 24a all
+                    resolve. Four characters pass through, so CYYZ and PANC
+                    work. Anything else is rejected rather than guessed at.
+                    An identifier that resolves to nothing leaves the map on
+                    the fallback field and says so, rather than silently
+                    showing the wrong airport.
+                    Default: K1A5 (Macon County, Franklin, NC).
+
+     ?span=2.5      Half-width of the opening view, in degrees of latitude.
+                    Accepted range 0.2 to 12. Longitude is widened by
+                    1/cos(lat) so the box stays roughly square on the ground.
+                    Default: 1.7, about 200 nm across at these latitudes.
+
+     ?zoom=10       Opening zoom level. Accepted range 5 to 13.
+                    Default: 9.
+
+     ?follow=0      Pins the map to the opening box. Without this the station
+                    set follows wherever you pan, one request per pause.
+                    Default: follow pans.
+
+   Examples:
+     /MetarMaps/                        K1A5, the default
+     /MetarMaps/?apt=KAVL               Asheville
+     /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
+     /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
+
+   Bookmark the URL and the page comes up on that field every time. Handing a
+   colleague a different link gives them their own tool, not yours.
+
+   ----------------------------------------------------------------------------
+   CONFIG — settings that belong to the deployment, not the invocation
+   ----------------------------------------------------------------------------
+   These are edited in the file below because they are properties of how and
+   where the page is hosted. They are not exposed in the URL on purpose: a
+   query string is for what a pilot chooses, not for what an administrator
+   configured once.
+
+     proxy       The one setting most deployments must change. AWC does not
+                 permit cross-origin browser requests, so a browser will
+                 normally block a direct call. Point this at your own relay
+                 (see worker.js). Leave empty to try AWC directly first.
+     cartoKey    Optional. CARTO began requiring an API key on their raster
+                 basemaps in August 2026. Empty means the keyless Esri dark
+                 base map is used, which is the default and needs no account.
+     home        Fallback field. Used only when no ?apt= is supplied, and when
+                 a supplied identifier cannot be resolved.
+     spanDeg     Default for ?span=.
+     homeZoom    Default for ?zoom=.
+     followMap   Default for ?follow=.
+     refreshMs   Poll interval. AWC's limit is 100 requests per minute across
+                 all clients, so five minutes is polite. Leave it alone.
+     staleMin    Age past which an observation is drawn as no current data
+                 rather than in its last category. A stale green dot over a
+                 field that went IFR two hours ago is the failure that hurts
+                 someone, so this is deliberately conservative.
+     maxSpanDeg  Widest box ever requested, however far you zoom out. AWC
+                 truncates any response at 400 stations; the status bar says
+                 so when that happens.
+     maxMarkers  Above this count the display thins: stations are bucketed
+                 into screen cells and one is kept per cell, always the one in
+                 the WORST condition. Thinning may hide good news. It must
+                 never hide weather.
+
+   ----------------------------------------------------------------------------
+   DATA
+   ----------------------------------------------------------------------------
+     METAR, AIRMET/SIGMET  NOAA / Aviation Weather Center   needs the proxy
+     Winds aloft           Open-Meteo pressure levels       cross-origin open
+     Radar                 NOAA NEXRAD via Iowa State       tiles, no key
+     Terrain, base, labels Esri / USGS                      tiles, no key
+
+   Raw METAR text is parsed here rather than trusting decoded fields, so the
+   same code path serves any feed that returns a raw report.
    ========================================================================== */
 
 const CONFIG = {
+  // Fallback home field, used when no ?apt= is supplied and when a supplied
+  // identifier cannot be resolved. Everything about the real home field is
+  // looked up at startup, so these literals are a safety net, not the truth.
   home: { id:'K1A5', name:'Macon County', city:'Franklin, NC',
           lat:35.22231, lon:-83.42000, elev:2034 },
 
-  // minLat, minLon, maxLat, maxLon — southern Appalachians + upstate SC + north GA
-  bbox: [33.55, -85.45, 36.85, -81.35],
+  // Half-width of the opening view, in degrees of latitude. The box is built
+  // around the home field rather than pinned to one region of the country.
+  spanDeg: 1.7,               // default for ?span=
 
-  homeZoom: 9,
+  homeZoom: 9,                // default for ?zoom=
 
-  // Leave '' to call aviationweather.gov directly. AWC documents that CORS is
-  // NOT permitted, so a browser will usually block that. Point this at your own
-  // proxy (see worker.js) — e.g. 'https://metar.yourname.workers.dev/?u='
-  // The target URL is appended, URI-encoded.
+  // The one setting most deployments must change. AWC documents that CORS is
+  // NOT permitted, so a browser will usually block a direct call. Point this at
+  // your own relay (see worker.js), e.g.
+  //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
+  // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
   proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
@@ -203,13 +389,15 @@ const CONFIG = {
   refreshMs: 5 * 60 * 1000,   // AWC rate limit is 100 req/min; 5 min is polite
   staleMin: 90,               // older than this = treated as no current data
 
-  // Coverage behaviour.
-  //   followMap true  — stations are pulled for whatever you have panned to.
-  //                     The bbox above becomes only the opening view.
-  //   followMap false — the bbox above is the whole world, forever.
+  // Coverage behaviour. Default for ?follow=.
+  //   true  — stations are pulled for wherever you pan; spanDeg is only the
+  //           opening view.
+  //   false — the map is pinned to the opening box permanently, which is what
+  //           you want for a wall display.
   followMap: true,
-  maxSpanDeg: 14,             // widest lat/lon span ever requested; AWC caps a
-                              // response at 400 stations, so do not go wild
+
+  maxSpanDeg: 14,             // widest box ever requested, however far you zoom
+                              // out; AWC truncates any response at 400 stations
   maxMarkers: 240             // above this, thin the display (see thinForZoom)
 };
 
@@ -419,8 +607,17 @@ function wxGlyph(p,color){
 /* ============================================================================
    Map
    ========================================================================== */
-const B = CONFIG.bbox;
-const REGION = L.latLngBounds([B[0],B[1]],[B[2],B[3]]);
+/* The opening box is derived from wherever home turns out to be. Longitude
+   degrees shrink with latitude, so widen them by 1/cos(lat) to keep the view
+   roughly square on the ground. */
+function boxAround(lat, lon, span){
+  const dLon = span / Math.max(Math.cos(toRad(lat)), 0.25);
+  return [ +(lat-span).toFixed(3), +(lon-dLon).toFixed(3),
+           +(lat+span).toFixed(3), +(lon+dLon).toFixed(3) ];
+}
+
+let B = boxAround(CONFIG.home.lat, CONFIG.home.lon, CONFIG.spanDeg);
+let REGION = L.latLngBounds([B[0],B[1]],[B[2],B[3]]);
 
 const map = L.map('map',{ zoomControl:false, attributionControl:false, worldCopyJump:false,
   minZoom:5, maxZoom:13 }).setView([CONFIG.home.lat,CONFIG.home.lon], CONFIG.homeZoom);
@@ -459,9 +656,9 @@ const layers = {
 };
 let showBarbs = true;
 
-// home field ring
-L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,color:'#59d4e8',weight:1,
-  opacity:.45,fill:false,dashArray:'3 5'}).addTo(map);   // 5 nm
+// 5 nm ring around the home field, repositioned once the field is resolved
+const homeRing = L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,
+  color:'#59d4e8',weight:1,opacity:.45,fill:false,dashArray:'3 5'}).addTo(map);
 
 /* ---------- which patch of ground are we asking about ---------- */
 let lastFetched = null;   // bbox actually requested, so small pans do not refetch
@@ -620,7 +817,8 @@ function renderHome(){
   $('#hCeil').textContent = ceilText(p);
   $('#hAlt').textContent  = p&&p.altim!=null ? p.altim.toFixed(2)+'"' : '—';
   $('#hTemp').textContent = p&&p.temp!=null ? `${p.temp}° / ${p.dewp==null?'—':p.dewp+'°'}` : '—';
-  const da = p ? densityAlt(CONFIG.home.elev, p.temp, p.altim) : null;
+  const da = (p && CONFIG.home.elev != null)
+    ? densityAlt(CONFIG.home.elev, p.temp, p.altim) : null;
   $('#hDa').textContent = da==null ? '—' : da.toLocaleString()+' ft';
   $('#hRaw').textContent = p ? p.raw : '';
 }
@@ -839,7 +1037,93 @@ function refreshAll(){
   if(map.hasLayer(radar)) radar.setUrl(RADAR_TPL + '?_=' + Date.now());
 }
 
-loadMetars(true);
+/* ============================================================================
+   Invocation — argument parsing and station resolution.
+   The arguments themselves are documented in the file header.
+   ========================================================================== */
+
+function normalizeIdent(raw){
+  const id = String(raw||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!id) return null;
+  if(id.length === 3) return 'K' + id;      // 1A5 -> K1A5, AVL -> KAVL
+  if(id.length === 4) return id;
+  return null;                              // anything else is not an identifier
+}
+
+function readArgs(){
+  const q = new URLSearchParams(location.search);
+  const span = parseFloat(q.get('span'));
+  const zoom = parseInt(q.get('zoom'), 10);
+  if(span > 0.2 && span < 12) CONFIG.spanDeg  = span;
+  if(zoom >= 5 && zoom <= 13) CONFIG.homeZoom = zoom;
+  if(q.get('follow') === '0') CONFIG.followMap = false;
+  return normalizeIdent(q.get('apt'));
+}
+
+/* Resolve an identifier to a place. The METAR endpoint carries coordinates,
+   elevation and site name alongside the observation, so one call usually does
+   it; stationinfo is the fallback for a field that is not reporting today. */
+async function resolveStation(id){
+  for(const path of [`metar?ids=${id}&format=json`, `stationinfo?ids=${id}&format=json`]){
+    let r;
+    try{ r = await awc(path); }catch(e){ throw e; }
+    if(!Array.isArray(r)) r = [r];
+    const d = r.find(x => x && x.lat != null && x.lon != null);
+    if(!d) continue;
+    const label = d.name || d.site || '';
+    const parts = String(label).split(',').map(x=>x.trim());
+    return {
+      id:   d.icaoId || id,
+      name: parts[0] || id,
+      city: parts.slice(1).join(', '),
+      lat:  d.lat,
+      lon:  d.lon,
+      elev: d.elev != null ? d.elev * 3.28084 : null
+    };
+  }
+  return null;
+}
+
+function applyHome(h){
+  CONFIG.home = h;
+  B = boxAround(h.lat, h.lon, CONFIG.spanDeg);
+  REGION = L.latLngBounds([B[0],B[1]],[B[2],B[3]]);
+  lastFetched = null;
+  homeRing.setLatLng([h.lat, h.lon]);
+  map.setView([h.lat, h.lon], CONFIG.homeZoom);
+
+  const elev = h.elev == null ? '' : ' · ' + Math.round(h.elev).toLocaleString() + ' ft';
+  $('#hId').textContent    = h.id;
+  $('#hWhere').textContent = [h.name, h.city].filter(Boolean).join(' · ') + elev;
+  document.title = `${h.id} · METAR map`;
+}
+
+async function boot(){
+  const asked = readArgs();
+  if(asked && asked !== CONFIG.home.id){
+    setStatus(`Looking up ${asked}…`);
+    let found = null;
+    try{ found = await resolveStation(asked); }
+    catch(e){
+      setStatus(`Could not reach aviationweather.gov (${e.message}). ` +
+        `Set <code>CONFIG.proxy</code>. <button id="retry">Retry</button>`, true);
+      const rt = $('#retry'); if(rt) rt.onclick = boot;
+      return;
+    }
+    if(found) applyHome(found);
+    else setStatus(`No station found for <b>${asked}</b> — showing ` +
+      `${CONFIG.home.id} instead. Check the identifier.`, true);
+  } else if(asked === CONFIG.home.id){
+    // Named the default explicitly; still resolve it so elevation is AWC's
+    // number rather than one typed into this file years ago.
+    try{ const f = await resolveStation(asked); if(f) applyHome(f); }catch(e){}
+  } else {
+    applyHome(CONFIG.home);
+  }
+  loadMetars(true);
+}
+
+boot();
 setInterval(()=>loadMetars(true), CONFIG.refreshMs);
 setInterval(renderHome, 60000);   // keep the age line honest between pulls
 </script>
