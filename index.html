@@ -61,6 +61,11 @@
                     which already carry terrain. ?terrain=1 forces it back.
                     Default: dark.
 
+     ?help          Print the option reference as plain text and build
+                    nothing: no map, no layers, no weather requests. Also ?h.
+                    The HELP constant further down is that text, and it is the
+                    copy users actually read — keep the two in step.
+
      ?national=0    At views wider than maxSpanDeg the map adds a backbone of
                     major reporting fields spread across the country, so the
                     whole visible map is populated at low density instead of a
@@ -153,7 +158,9 @@
 
    Raw METAR text is parsed here rather than trusting decoded fields, so the
    same code path serves any feed that returns a raw report.
-   ========================================================================== */<!DOCTYPE html>
+   ========================================================================== */
+
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -282,6 +289,16 @@
     #legend{display:none}
     .leaflet-control-zoom{display:none}
   }
+  /* ?help — plain text, no map */
+  body.helpmode{height:auto;overflow:auto;background:var(--bg)}
+  #help{margin:0;padding:30px 24px 10px;max-width:92ch;
+    font:13px/1.55 var(--mono);color:var(--ink);white-space:pre-wrap;word-break:break-word}
+  #help a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(89,212,232,.35)}
+  #help a:hover{border-bottom-color:var(--accent)}
+  #helpfoot{margin:0;padding:4px 24px 40px;font:13px var(--mono)}
+  #helpfoot a{color:var(--accent)}
+  @media (max-width:620px){#help{font-size:11.5px;padding:18px 14px 8px}}
+
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -402,6 +419,11 @@
                     which already carry terrain. ?terrain=1 forces it back.
                     Default: dark.
 
+     ?help          Print the option reference as plain text and build
+                    nothing: no map, no layers, no weather requests. Also ?h.
+                    The HELP constant further down is that text, and it is the
+                    copy users actually read — keep the two in step.
+
      ?national=0    At views wider than maxSpanDeg the map adds a backbone of
                     major reporting fields spread across the country, so the
                     whole visible map is populated at low density instead of a
@@ -514,8 +536,8 @@ const CONFIG = {
   // your own relay (see worker.js), e.g.
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
-
-  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
+  
+ proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
@@ -764,8 +786,123 @@ function wxGlyph(p,color){
 }
 
 /* ============================================================================
-   Map
+   Help
+   ----------------------------------------------------------------------------
+   ?help prints the option reference as plain text and builds nothing: no map,
+   no layers, no weather requests. Keep this text in step with the invocation
+   section of the file header; this is the copy a user actually reads.
    ========================================================================== */
+
+function wantsHelp(){
+  const q = new URLSearchParams(location.search);
+  return q.has('help') || q.has('h');
+}
+
+const HELP = String.raw`MetarMaps — live regional METAR map
+Reference and planning only. Not for navigation.
+
+USAGE
+  <page-url>?option=value&option=value
+
+OPTIONS
+  apt=<ident>      Home field. ICAO or FAA identifier, case insensitive.
+                   Three characters take a K prefix: 1a5 becomes K1A5.
+                   Four characters pass through: CYYZ, PANC.
+                   Coordinates, elevation and site name are looked up at
+                   startup, so density altitude is correct for any field.
+                   default: K1A5  (Macon County, Franklin, NC)
+
+  span=<degrees>   Half-width of the opening view, in degrees of latitude.
+                   Range 0.2 to 12. Longitude is widened by 1/cos(lat) so the
+                   box stays roughly square on the ground.
+                   default: 1.7   (about 200 nm across at these latitudes)
+
+  zoom=<n>         Opening zoom level. Range 5 to 13.
+                   default: 9
+
+  base=<name>      Background map. Legibility here is governed by saturation,
+                   not lightness: the five category colours must be the only
+                   saturated things on the screen.
+                     dark      Esri Dark Gray Canvas     keyless   default
+                     light     Esri Light Gray Canvas    keyless
+                     relief    USGS 3DEP shaded relief   keyless
+                     topo      USGS topographic quads    keyless
+                     imagery   Esri World Imagery        keyless
+                     osm       OpenStreetMap standard    keyless
+                     carto     CARTO Dark Matter         needs an API key
+                   default: dark
+
+  terrain=<0|1>    Shaded relief overlay.
+                   default: on, but off over relief, topo and imagery, which
+                   already carry terrain. terrain=1 forces it back.
+
+  radar=<0|1>      NEXRAD base reflectivity at load.
+                   default: off
+
+  national=<0|1>   At views wider than 14 degrees, add a backbone of major
+                   reporting fields spread across the country, so the whole
+                   map is populated at low density rather than a dense patch
+                   around the centre. Local detail near the centre is still
+                   pulled by geography alongside it.
+                   default: on
+
+  follow=<0|1>     Pull stations for wherever you pan. 0 pins the map to the
+                   opening box, which is what a fixed wall display wants.
+                   default: on
+
+  help             Print this page and build nothing. Also -h as ?h.
+
+BOOLEAN VALUES
+  on       1  on  true  yes  y
+  off      0  off false no   n
+  A bare flag counts as on, so ?radar and ?radar=1 are the same thing.
+  An unrecognised value falls back to the default rather than guessing.
+
+EXAMPLES
+  ?apt=KAVL                            Asheville
+  ?apt=rhp                             Andrews-Murphy, case insensitive
+  ?apt=KTYS&span=3&zoom=8              Knoxville, wider opening view
+  ?apt=K1A5&base=relief&radar=1        home field on shaded relief, radar up
+  ?apt=KGSP&follow=0&national=0        fixed box, centre-only coverage
+
+BEHAVIOUR WORTH KNOWING
+  An identifier that resolves to nothing leaves the map on the default field
+  and says so, rather than silently showing the wrong airport.
+  Observations older than 90 minutes are drawn as no current data, not in
+  their last category.
+  AWC truncates any single response at 400 stations; the status bar says so.
+  Above 240 stations the display thins, keeping the worst condition in each
+  screen cell. Thinning may hide good news. It never hides weather.
+
+DATA
+  METAR, AIRMET/SIGMET   NOAA / Aviation Weather Center
+  Winds aloft            Open-Meteo pressure levels
+  Radar                  NOAA NEXRAD via Iowa State Mesonet
+  Terrain, base, labels  Esri, USGS, OpenStreetMap
+`;
+
+function renderHelp(){
+  document.title = 'MetarMaps — options';
+  document.body.classList.add('helpmode');
+  const base = location.pathname;
+  const body = HELP.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    // make the example lines clickable without disturbing the alignment
+    .replace(/^(\s{2})(\?[A-Za-z0-9=&;_.-]+)/gm,
+      (m,pad,q) => pad + '<a href="' + base + q.replace(/&amp;/g,'&') + '">' + q + '</a>');
+  document.body.innerHTML =
+    '<pre id="help">' + body + '</pre>' +
+    '<p id="helpfoot"><a href="' + base + '">Open the map with defaults</a></p>';
+}
+
+/* ============================================================================
+   Map
+   ----------------------------------------------------------------------------
+   Everything below is wrapped in start() so that ?help can return before any
+   of it runs. The body is left at its original indentation on purpose: the
+   SVG and status strings are multi-line template literals, and re-indenting
+   would quietly change their contents.
+   ========================================================================== */
+function start(){
 
 /* ----------------------------------------------------------------------------
    Basemap catalogue. Selected with ?base=. What matters for legibility is
@@ -1506,6 +1643,9 @@ async function boot(){
 boot();
 setInterval(()=>loadMetars(true), CONFIG.refreshMs);
 setInterval(renderHome, 60000);   // keep the age line honest between pulls
+}  /* end start() */
+
+if(wantsHelp()) renderHelp(); else start();
 </script>
 </body>
 </html>
