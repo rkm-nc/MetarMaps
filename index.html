@@ -1,9 +1,6 @@
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
-   R. McMahan
-   rkm-public@gmail.com
-
    One file. No build step, no server-side code. Two CDN files (Leaflet) and a
    handful of public weather feeds. Serve it from any static host.
 
@@ -64,6 +61,15 @@
                     which already carry terrain. ?terrain=1 forces it back.
                     Default: dark.
 
+     ?national=0    At views wider than maxSpanDeg the map adds a backbone of
+                    major reporting fields spread across the country, so the
+                    whole visible map is populated at low density instead of a
+                    dense patch around the center with empty edges. Local
+                    detail around the center is still pulled by geography
+                    alongside it. Turn this off to go back to centre-only
+                    coverage.
+                    Default: on.
+
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
@@ -84,6 +90,7 @@
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
@@ -124,9 +131,13 @@
                  rather than in its last category. A stale green dot over a
                  field that went IFR two hours ago is the failure that hurts
                  someone, so this is deliberately conservative.
-     maxSpanDeg  Widest box ever requested, however far you zoom out. AWC
-                 truncates any response at 400 stations; the status bar says
-                 so when that happens.
+     maxSpanDeg  Widest box requested by geography, however far you zoom out,
+                 and the threshold past which the national backbone comes in.
+                 AWC truncates any response at 400 stations; the status bar
+                 says so when a local request hits that.
+     national    Default for ?national=. The list itself is the NATIONAL table
+                 further down; it is a backbone, not a census, and a wrong
+                 entry costs nothing because unknown identifiers return empty.
      maxMarkers  Above this count the display thins: stations are bucketed
                  into screen cells and one is kept per cell, always the one in
                  the WORST condition. Thinning may hide good news. It must
@@ -142,9 +153,7 @@
 
    Raw METAR text is parsed here rather than trusting decoded fields, so the
    same code path serves any feed that returns a raw report.
-   ========================================================================== */
-
-<!DOCTYPE html>
+   ========================================================================== */<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -393,6 +402,15 @@
                     which already carry terrain. ?terrain=1 forces it back.
                     Default: dark.
 
+     ?national=0    At views wider than maxSpanDeg the map adds a backbone of
+                    major reporting fields spread across the country, so the
+                    whole visible map is populated at low density instead of a
+                    dense patch around the center with empty edges. Local
+                    detail around the center is still pulled by geography
+                    alongside it. Turn this off to go back to centre-only
+                    coverage.
+                    Default: on.
+
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
@@ -413,6 +431,7 @@
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
 
@@ -453,9 +472,13 @@
                  rather than in its last category. A stale green dot over a
                  field that went IFR two hours ago is the failure that hurts
                  someone, so this is deliberately conservative.
-     maxSpanDeg  Widest box ever requested, however far you zoom out. AWC
-                 truncates any response at 400 stations; the status bar says
-                 so when that happens.
+     maxSpanDeg  Widest box requested by geography, however far you zoom out,
+                 and the threshold past which the national backbone comes in.
+                 AWC truncates any response at 400 stations; the status bar
+                 says so when a local request hits that.
+     national    Default for ?national=. The list itself is the NATIONAL table
+                 further down; it is a backbone, not a census, and a wrong
+                 entry costs nothing because unknown identifiers return empty.
      maxMarkers  Above this count the display thins: stations are bucketed
                  into screen cells and one is kept per cell, always the one in
                  the WORST condition. Thinning may hide good news. It must
@@ -491,7 +514,8 @@ const CONFIG = {
   // your own relay (see worker.js), e.g.
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
-    proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
+
+  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
@@ -507,9 +531,14 @@ const CONFIG = {
   //           you want for a wall display.
   followMap: true,
 
-  maxSpanDeg: 14,             // widest box ever requested, however far you zoom
-                              // out; AWC truncates any response at 400 stations
+  maxSpanDeg: 14,             // widest box requested by geography, and the
+                              // threshold past which the backbone comes in
   maxMarkers: 240,            // above this, thin the display (see thinForZoom)
+
+  // Past maxSpanDeg the map adds the national backbone (see NATIONAL below) so
+  // the whole country is populated at low density instead of a dense patch
+  // around the center. Default for ?national=.
+  national: true,
 
   // Background map. Default for ?base=. See the BASEMAPS catalogue below for
   // the full set. What governs legibility is saturation, not lightness.
@@ -848,6 +877,89 @@ let showBarbs = true;
 const homeRing = L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,
   color:'#59d4e8',weight:1,opacity:.45,fill:false,dashArray:'3 5'}).addTo(map);
 
+/* ----------------------------------------------------------------------------
+   National backbone.
+
+   AWC truncates any single response at 400 stations, and that truncation is
+   not spatially distributed — asking for the whole country returns a dense
+   clot somewhere and blank space everywhere else. So past a certain view
+   width the map stops asking by geography and asks by name instead: this
+   list, which is spread deliberately across the country.
+
+   It is a backbone, not a census. Roughly one field per 100 miles in populated
+   areas, thinner in the mountain west, which is honest to where the reporting
+   stations actually are. Local detail around wherever you are centered still
+   comes from a bbox request alongside it, so the middle of the map keeps its
+   density while the edges fill in.
+
+   Editing it: identifiers that do not exist or are not reporting simply come
+   back empty, so a wrong entry costs nothing. Keep the total under 400.
+   -------------------------------------------------------------------------- */
+const NATIONAL = [
+  // Northeast
+  'KBOS', 'KBDL', 'KPVD', 'KPWM', 'KBGR', 'KCON', 'KMHT', 'KBTV',
+  'KALB', 'KSYR', 'KROC', 'KBUF', 'KBGM', 'KELM', 'KJFK', 'KLGA',
+  'KEWR', 'KISP', 'KHPN', 'KSWF', 'KTEB', 'KPHL', 'KABE', 'KAVP',
+  'KMDT', 'KIPT', 'KBFD', 'KERI', 'KPIT', 'KJST', 'KLBE', 'KAOO',
+  'KPSM', 'KORH', 'KACK', 'KHYA', 'KEWB', 'KGON', 'KMSS', 'KPBG',
+  'KSLK', 'KITH', 'KLNS', 'KRDG',
+  // Mid-Atlantic
+  'KMGW', 'KCKB', 'KCRW', 'KHTS', 'KPKB', 'KEKN', 'KBKW', 'KLWB',
+  'KROA', 'KLYH', 'KCHO', 'KRIC', 'KORF', 'KPHF', 'KSBY', 'KBWI',
+  'KDCA', 'KIAD', 'KDOV', 'KILG', 'KACY', 'KTTN', 'KHGR', 'KSHD',
+  'KBLF', 'KDAN',
+  // Southeast
+  'KRDU', 'KGSO', 'KCLT', 'KFAY', 'KILM', 'KEWN', 'KOAJ', 'KHSE',
+  'KECG', 'KAVL', 'KHKY', 'KINT', 'KGSP', 'KCAE', 'KCHS', 'KMYR',
+  'KFLO', 'KAGS', 'KSAV', 'KABY', 'KMCN', 'KATL', 'KAHN', 'KCSG',
+  'KVLD', 'KBQK', 'KJAX', 'KGNV', 'KDAB', 'KMCO', 'KMLB', 'KTPA',
+  'KSRQ', 'KRSW', 'KFMY', 'KPBI', 'KFLL', 'KMIA', 'KEYW', 'KTLH',
+  'KPNS', 'KVPS', 'KPFN', 'KAPF', 'KSUA', 'KOCF',
+  // Gulf
+  'KDHN', 'KMGM', 'KMOB', 'KBHM', 'KHSV', 'KTCL', 'KANB', 'KMEI',
+  'KJAN', 'KGLH', 'KGTR', 'KHBG', 'KBTR', 'KMSY', 'KLFT', 'KLCH',
+  'KAEX', 'KSHV', 'KMLU', 'KLIT', 'KFSM', 'KXNA', 'KTXK', 'KPBF',
+  'KHOT', 'KJBR', 'KMEM', 'KBNA', 'KTYS', 'KCHA', 'KTRI', 'KBWG',
+  'KSDF', 'KLEX', 'KCVG', 'KPAH', 'KOWB',
+  // Great Lakes
+  'KIND', 'KFWA', 'KSBN', 'KEVV', 'KLAF', 'KMIE', 'KORD', 'KMDW',
+  'KPIA', 'KSPI', 'KBMI', 'KCMI', 'KMLI', 'KRFD', 'KDEC', 'KUIN',
+  'KALN', 'KSTL', 'KDTW', 'KGRR', 'KLAN', 'KFNT', 'KMBS', 'KAZO',
+  'KTVC', 'KPLN', 'KCMX', 'KSAW', 'KESC', 'KIMT', 'KMKG', 'KCLE',
+  'KCAK', 'KCMH', 'KDAY', 'KTOL', 'KYNG', 'KMFD', 'KZZV', 'KMKE',
+  'KGRB', 'KMSN', 'KEAU', 'KLSE', 'KCWA', 'KRHI', 'KASX', 'KHUF',
+  // Upper Midwest
+  'KMSP', 'KDLH', 'KSTC', 'KRST', 'KINL', 'KBJI', 'KFAR', 'KGFK',
+  'KBIS', 'KMOT', 'KDIK', 'KFSD', 'KRAP', 'KPIR', 'KABR', 'KDSM',
+  'KCID', 'KALO', 'KDBQ', 'KSUX', 'KMCW', 'KOTM', 'KBRL', 'KOMA',
+  'KLNK', 'KGRI', 'KBFF', 'KLBF', 'KSGF', 'KCOU', 'KJLN', 'KMCI',
+  'KSTJ', 'KIRK',
+  // Southern Plains
+  'KICT', 'KTOP', 'KGCK', 'KHYS', 'KSLN', 'KDDC', 'KLBL', 'KOKC',
+  'KTUL', 'KLAW', 'KSWO', 'KGAG', 'KAMA', 'KLBB', 'KMAF', 'KDFW',
+  'KDAL', 'KAUS', 'KSAT', 'KHOU', 'KIAH', 'KCRP', 'KHRL', 'KBRO',
+  'KLRD', 'KMFE', 'KACT', 'KCLL', 'KGGG', 'KTYR', 'KABI', 'KSJT',
+  'KDRT', 'KBPT', 'KGLS', 'KVCT',
+  // Rockies
+  'KELP', 'KABQ', 'KROW', 'KFMN', 'KSAF', 'KLVS', 'KDEN', 'KCOS',
+  'KGJT', 'KPUB', 'KASE', 'KEGE', 'KDRO', 'KALS', 'KCYS', 'KCPR',
+  'KRIW', 'KJAC', 'KCOD', 'KSHR', 'KBIL', 'KBZN', 'KMSO', 'KGTF',
+  'KHLN', 'KFCA', 'KGGW', 'KSDY', 'KBOI', 'KIDA', 'KTWF', 'KPIH',
+  'KSUN', 'KSLC', 'KOGD', 'KPVU', 'KSGU', 'KCDC', 'KVEL',
+  // Southwest
+  'KLAS', 'KRNO', 'KELY', 'KEKO', 'KTPH', 'KPHX', 'KTUS', 'KFLG',
+  'KPRC', 'KYUM', 'KIGM', 'KGCN', 'KSOW', 'KSAD',
+  // West Coast
+  'KSAN', 'KLAX', 'KBUR', 'KLGB', 'KSNA', 'KONT', 'KPSP', 'KBFL',
+  'KFAT', 'KSMF', 'KSFO', 'KOAK', 'KSJC', 'KMRY', 'KSBP', 'KSBA',
+  'KSMX', 'KACV', 'KRDD', 'KCIC', 'KMOD', 'KSCK', 'KBIH', 'KEUG',
+  'KPDX', 'KRDM', 'KMFR', 'KOTH', 'KLMT', 'KPDT', 'KSEA', 'KGEG',
+  'KYKM', 'KPSC', 'KALW', 'KBLI', 'KOLM', 'KHQM',
+  // Alaska & Hawaii
+  'PANC', 'PAFA', 'PAJN', 'PABE', 'PAOM', 'PASC', 'PADQ', 'PAKN',
+  'PAEN', 'PASI', 'PAYA', 'PHNL', 'PHOG', 'PHTO', 'PHKO', 'PHLI'
+];
+
 /* ---------- which patch of ground are we asking about ---------- */
 let lastFetched = null;   // bbox actually requested, so small pans do not refetch
 
@@ -863,6 +975,15 @@ function currentBbox(){
 
 // True when the new view is already inside what we last asked for, with a
 // little margin. Panning within that needs no network call at all.
+/* A view wider than maxSpanDeg cannot be served by one bbox request without
+   hitting AWC's truncation, so it switches sourcing. */
+function isWideView(){
+  if(!CONFIG.national) return false;
+  const b = map.getBounds();
+  return (b.getNorth()-b.getSouth()) > CONFIG.maxSpanDeg
+      || (b.getEast()-b.getWest())  > CONFIG.maxSpanDeg;
+}
+
 function covered(bb){
   if(!lastFetched) return false;
   const [s,w,n,e] = bb, [S,W,N,E] = lastFetched;
@@ -1046,16 +1167,26 @@ function ingest(d){
   return id;
 }
 
+let lastWide = null;
+
 async function loadMetars(force){
-  const bb = currentBbox();
-  if(!force && covered(bb)) return;          // already have this ground
+  const bb   = currentBbox();
+  const wide = isWideView();
+  // Crossing the local/wide boundary changes where stations come from, so it
+  // always refetches even when the new box sits inside the old one.
+  if(!force && wide === lastWide && covered(bb)) return;
   if(inflight) return;
   inflight = true;
-  setStatus('Loading observations…');
+  setStatus(wide ? 'Loading national observations…' : 'Loading observations…');
 
   let data;
   try{
-    data = await awc(`metar?bbox=${bb.join(',')}&format=json`);
+    // Local detail around the center, always. At wide view, the backbone too,
+    // so the edges of the map are populated rather than empty.
+    const calls = [ awc(`metar?bbox=${bb.join(',')}&format=json`) ];
+    if(wide) calls.push(awc(`metar?ids=${NATIONAL.join(',')}&format=json`));
+    const parts = await Promise.all(calls);
+    data = parts.flatMap(x => Array.isArray(x) ? x : (x ? [x] : []));
   }catch(e){
     inflight = false;
     setStatus(`Could not reach aviationweather.gov (${e.message}). ` +
@@ -1064,8 +1195,6 @@ async function loadMetars(force){
     const rt = $('#retry'); if(rt) rt.onclick = ()=>loadMetars(true);
     return;
   }
-  if(!Array.isArray(data)) data = [data];
-
   const seen = new Set();
   for(const d of data){ const id = ingest(d); if(id) seen.add(id); }
 
@@ -1083,16 +1212,18 @@ async function loadMetars(force){
   }
 
   lastFetched = bb;
-  inflight = false;
+  lastWide    = wide;
+  inflight    = false;
   renderStations();
   for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
   if(map.hasLayer(layers.airsig)) loadAirSig();
 
   const t = new Date();
-  const truncated = data.length >= 400
-    ? ' · <b>truncated at 400 by AWC — zoom in</b>' : '';
+  const note = wide
+    ? ' · wide view: major fields nationwide, full detail near center'
+    : (data.length >= 400 ? ' · <b>truncated at 400 by AWC — zoom in</b>' : '');
   setStatus(`${seen.size} stations · updated ${pad(t.getHours())}:${pad(t.getMinutes())} local` +
-    truncated + ` · <button id="retry">Refresh</button>`);
+    note + ` · <button id="retry">Refresh</button>`);
   const rt = $('#retry'); if(rt) rt.onclick = refreshAll;
 }
 
@@ -1287,6 +1418,7 @@ function readArgs(){
   if(zoom >= 5 && zoom <= 13) CONFIG.homeZoom = zoom;
   CONFIG.followMap   = argBool(q.get('follow'),  CONFIG.followMap);
   CONFIG.showRadar   = argBool(q.get('radar'),   CONFIG.showRadar);
+  CONFIG.national    = argBool(q.get('national'), CONFIG.national);
 
   const b = String(q.get('base')||'').trim().toLowerCase();
   if(b && BASEMAPS[b]) CONFIG.basemap = b;
