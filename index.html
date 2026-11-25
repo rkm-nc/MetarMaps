@@ -1,3 +1,4 @@
+
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
@@ -35,9 +36,13 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
-     ?base=light    Background map. What governs legibility here is SATURATION,
-                    not lightness: the five category colours must be the only
-                    saturated things on the screen. Any neutral base works.
+     ?base=light    Background map, and the opening value of the Base map
+                    picker at the top of the chip rail. The picker switches
+                    the base live, with no reload, and writes the choice back
+                    into this argument so a bookmark or a refresh holds it.
+                    What governs legibility here is SATURATION, not lightness:
+                    the five category colours must be the only saturated
+                    things on the screen. Any neutral base works.
 
                       dark     Esri Dark Gray Canvas. Keyless. The default.
                       light    Esri Light Gray Canvas. Keyless. Same
@@ -58,7 +63,11 @@
                       carto    CARTO Dark Matter. Requires CONFIG.cartoKey.
 
                     The hillshade defaults off over relief, topo and imagery,
-                    which already carry terrain. ?terrain=1 forces it back.
+                    which already carry terrain, and that default is reapplied
+                    on each live switch — but only while the person has not
+                    touched the Terrain chip or passed ?terrain=. Once they
+                    have, the choice is theirs and a base switch leaves it
+                    alone.
                     Default: dark.
 
      ?help          Print the option reference as plain text and build
@@ -140,8 +149,11 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
-     basemap     Default for ?base=. The catalogue itself is the BASEMAPS
-                 table further down; add an entry there to offer another.
+     basemap     Opening value for ?base= and the picker. The catalogue is the
+                 BASEMAPS table further down: add a row there and it appears in
+                 the picker, with a label in BASE_LABEL. A row carrying key:true
+                 is listed disabled until CONFIG.cartoKey is set, rather than
+                 hidden, so the reason it is unavailable is visible.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
      showTrend   Default for ?trend=, with trendHours the look-back window and
@@ -220,7 +232,7 @@
 
   /* ---- chip rail ---- */
   #rail{position:absolute;top:10px;right:10px;z-index:900;display:flex;flex-direction:column;gap:5px;
-    max-height:calc(100% - 20px);overflow:auto;scrollbar-width:none}
+    max-height:calc(100% - 20px);overflow:auto;scrollbar-width:none;min-width:146px}
   #rail::-webkit-scrollbar{display:none}
   .chip{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink-dim);
     font:500 12px/1 var(--sans);letter-spacing:.01em;padding:8px 11px;border-radius:3px;cursor:pointer;
@@ -229,6 +241,25 @@
   .chip[aria-pressed="true"]{color:var(--bg);background:var(--accent);border-color:var(--accent);font-weight:600}
   .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .rail-gap{height:7px}
+
+  /* Base-map picker. A native select, so it gets keyboard handling and the
+     platform picker on a phone without a line of dropdown code. */
+  .sel{position:relative;display:block;background:var(--panel);
+    border:1px solid var(--line);border-radius:3px;backdrop-filter:blur(8px);
+    padding:5px 8px 6px}
+  .sel-cap{display:block;font:500 9.5px/1 var(--sans);letter-spacing:.06em;
+    text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px}
+  .sel select{appearance:none;-webkit-appearance:none;background:none;border:0;
+    color:var(--ink);font:600 12px/1.15 var(--sans);padding:0 16px 0 0;
+    margin:0;width:100%;cursor:pointer;outline:none}
+  .sel select option{background:var(--bg-2);color:var(--ink)}
+  .sel select option:disabled{color:var(--ink-faint)}
+  .sel::after{content:'';position:absolute;right:8px;bottom:10px;width:7px;height:7px;
+    border-right:1.5px solid var(--ink-dim);border-bottom:1.5px solid var(--ink-dim);
+    transform:rotate(45deg) translateY(-2px);pointer-events:none}
+  .sel:hover{border-color:rgba(140,185,205,.45)}
+  .sel:hover::after{border-color:var(--ink)}
+  .sel:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 
   /* ---- home card: the hero ---- */
   #home{position:absolute;top:10px;left:52px;z-index:900;width:264px;max-width:calc(100vw - 72px);
@@ -378,6 +409,11 @@
 </section>
 
 <nav id="rail" aria-label="Map layers">
+  <label class="sel" id="baseWrap">
+    <span class="sel-cap">Base map</span>
+    <select id="baseSel" aria-label="Background map"></select>
+  </label>
+  <div class="rail-gap"></div>
   <button class="chip" id="fitHome">Fit Home</button>
   <button class="chip" id="fitRegion">Fit region</button>
   <div class="rail-gap"></div>
@@ -451,9 +487,13 @@
                     set follows wherever you pan, one request per pause.
                     Default: follow pans.
 
-     ?base=light    Background map. What governs legibility here is SATURATION,
-                    not lightness: the five category colours must be the only
-                    saturated things on the screen. Any neutral base works.
+     ?base=light    Background map, and the opening value of the Base map
+                    picker at the top of the chip rail. The picker switches
+                    the base live, with no reload, and writes the choice back
+                    into this argument so a bookmark or a refresh holds it.
+                    What governs legibility here is SATURATION, not lightness:
+                    the five category colours must be the only saturated
+                    things on the screen. Any neutral base works.
 
                       dark     Esri Dark Gray Canvas. Keyless. The default.
                       light    Esri Light Gray Canvas. Keyless. Same
@@ -474,7 +514,11 @@
                       carto    CARTO Dark Matter. Requires CONFIG.cartoKey.
 
                     The hillshade defaults off over relief, topo and imagery,
-                    which already carry terrain. ?terrain=1 forces it back.
+                    which already carry terrain, and that default is reapplied
+                    on each live switch — but only while the person has not
+                    touched the Terrain chip or passed ?terrain=. Once they
+                    have, the choice is theirs and a base switch leaves it
+                    alone.
                     Default: dark.
 
      ?help          Print the option reference as plain text and build
@@ -556,8 +600,11 @@
      spanDeg     Default for ?span=.
      homeZoom    Default for ?zoom=.
      followMap   Default for ?follow=.
-     basemap     Default for ?base=. The catalogue itself is the BASEMAPS
-                 table further down; add an entry there to offer another.
+     basemap     Opening value for ?base= and the picker. The catalogue is the
+                 BASEMAPS table further down: add a row there and it appears in
+                 the picker, with a label in BASE_LABEL. A row carrying key:true
+                 is listed disabled until CONFIG.cartoKey is set, rather than
+                 hidden, so the reason it is unavailable is visible.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
      showTrend   Default for ?trend=, with trendHours the look-back window and
@@ -624,8 +671,9 @@ const CONFIG = {
   // your own relay (see worker.js), e.g.
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
+  
+  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
- proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
@@ -685,6 +733,10 @@ const CONFIG = {
   // ?terrain=. Either can still be toggled from the chip rail at any time.
   showRadar:   false,
   showTerrain: true,
+  // The configured default, kept separate because showTerrain is rewritten by
+  // ?terrain= and by each base's own preference.
+  showTerrainDefault: true,
+  terrainExplicit: false,
 
   // Marker size. The whole station glyph — dot, barb, weather symbol and
   // identifier — is drawn from one SVG, so a single multiplier scales all of
@@ -976,9 +1028,12 @@ OPTIONS
   zoom=<n>         Opening zoom level. Range 5 to 13.
                    default: 9
 
-  base=<name>      Background map. Legibility here is governed by saturation,
-                   not lightness: the five category colours must be the only
-                   saturated things on the screen.
+  base=<name>      Background map. Also switchable live from the Base map
+                   picker at the top of the chip rail, which writes the choice
+                   back into this argument so a refresh holds it. Legibility
+                   here is governed by saturation, not lightness: the five
+                   category colours must be the only saturated things on the
+                   screen.
                      dark      Esri Dark Gray Canvas     keyless   default
                      light     Esri Light Gray Canvas    keyless
                      relief    USGS 3DEP shaded relief   keyless
@@ -990,7 +1045,9 @@ OPTIONS
 
   terrain=<0|1>    Shaded relief overlay.
                    default: on, but off over relief, topo and imagery, which
-                   already carry terrain. terrain=1 forces it back.
+                   already carry terrain. That default is reapplied whenever
+                   the base changes, until you state a choice with this
+                   argument or the Terrain chip; after that it is left alone.
 
   radar=<0|1>      NEXRAD base reflectivity at load.
                    default: off
@@ -1157,33 +1214,112 @@ const map = L.map('map',{ zoomControl:false, attributionControl:false, worldCopy
 L.control.zoom({position:'topleft'}).addTo(map);
 
 
-const BM = BASEMAPS[CONFIG.basemap] || BASEMAPS.dark;
-if(!BM.dark){
-  document.body.classList.add('lightbase');
-  document.documentElement.style.setProperty('--halo', '#ffffff');
-}
-const HALO = BM.dark ? '#091720' : '#ffffff';
-
-const base = L.tileLayer(
-  BM.key && CONFIG.cartoKey ? BM.url + '?key=' + CONFIG.cartoKey : BM.url,
-  { maxZoom:BM.maxZoom, subdomains:BM.sub || 'abc', attribution:BM.attr }).addTo(map);
-$('#attrib').textContent = BM.attr;
+/* The base map is swappable at runtime, so everything derived from it is a
+   binding rather than a constant: the tile layer, the separate labels layer,
+   the halo colour that marker text is outlined with, and the body class that
+   flips the page to light-base styling. applyBasemap below is the only place
+   that writes any of them. */
+let BM     = BASEMAPS[CONFIG.basemap] || BASEMAPS.dark;
+let HALO   = '#091720';
+let base   = null;
+let labels = null;
 
 const terrain = L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
   { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' });
-if(CONFIG.showTerrain) terrain.addTo(map);
-
-/* Place names and roads, drawn over the hillshade so terrain does not bury
-   them. Bases that carry their own labels get none. */
-const labels = BM.ref
-  ? L.tileLayer(BM.ref, { maxZoom:BM.maxZoom, opacity:0.85 }).addTo(map)
-  : null;
-if(labels && CONFIG.showTerrain) labels.bringToFront();
 
 const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 const radar = L.tileLayer(RADAR_TPL,
   { opacity:0.55, maxZoom:13, attribution:'NOAA / NWS via Iowa State Mesonet' });
+
+/* Has the user touched the terrain chip? A base that already carries relief
+   wants the hillshade off, but that is a DEFAULT, not an override: once the
+   person has made the choice themselves it is theirs to keep, and a base
+   switch must not quietly undo it. */
+let terrainTouched = CONFIG.terrainExplicit;
+
+function basemapUrl(bm){
+  return (bm.key && CONFIG.cartoKey) ? bm.url + '?key=' + CONFIG.cartoKey : bm.url;
+}
+
+/* Build or rebuild the base. Called once at startup and again on every change
+   from the picker. Tile layers are torn down rather than re-pointed, because
+   maxZoom and the subdomain list differ between providers and setUrl does not
+   touch either. */
+function applyBasemap(key, opts){
+  const bm = BASEMAPS[key];
+  if(!bm) return;
+  // CARTO watermarks anonymous requests, so without a key it is not offered.
+  // The control is resynced on the way out, or it would go on showing a base
+  // that was never loaded.
+  if(bm.key && !CONFIG.cartoKey){ syncBaseSelect(); return; }
+
+  BM = bm;
+  CONFIG.basemap = key;
+  HALO = bm.dark ? '#091720' : '#ffffff';
+
+  document.body.classList.toggle('lightbase', !bm.dark);
+  document.documentElement.style.setProperty('--halo', HALO);
+
+  if(base)   { map.removeLayer(base);   base = null; }
+  if(labels) { map.removeLayer(labels); labels = null; }
+
+  base = L.tileLayer(basemapUrl(bm),
+    { maxZoom:bm.maxZoom, subdomains:bm.sub || 'abc', attribution:bm.attr });
+  base.addTo(map);
+  base.bringToBack();
+
+  // Bases that carry their own labels get no separate reference layer.
+  if(bm.ref){
+    labels = L.tileLayer(bm.ref, { maxZoom:bm.maxZoom, opacity:0.85 });
+    labels.addTo(map);
+  }
+
+  const at = $('#attrib');
+  if(at) at.textContent = bm.attr;
+
+  // Deciding the terrain state and applying it are two steps. Only the first
+  // is skipped when the person has already chosen: the layer still has to be
+  // brought into line, or a stated ?terrain=1 would never be honoured.
+  if(!terrainTouched)
+    CONFIG.showTerrain = bm.terrain ? false : CONFIG.showTerrainDefault;
+  if(CONFIG.showTerrain  && !map.hasLayer(terrain)) terrain.addTo(map);
+  if(!CONFIG.showTerrain &&  map.hasLayer(terrain)) map.removeLayer(terrain);
+
+  // The chip is the visible record of that state, so it follows. Only this one
+  // chip is touched: a full chip resync would read state declared further down
+  // the file and is not safe to call this early.
+  const tChip = document.querySelector('.chip[data-layer="terrain"]');
+  if(tChip) tChip.setAttribute('aria-pressed', String(CONFIG.showTerrain));
+
+  // Stack: base, hillshade, labels, radar. Markers are in panes above all of
+  // these and are unaffected.
+  if(map.hasLayer(terrain)) terrain.bringToFront();
+  if(labels) labels.bringToFront();
+  if(map.hasLayer(radar))   radar.bringToFront();
+
+  // The station dot bakes the halo colour into its SVG stroke, so the glyphs
+  // have to be rebuilt. The label outline and the wind and freezing-level text
+  // read var(--halo) and follow on their own.
+  if(opts && opts.rerender) renderStations();
+
+  if(typeof syncBaseSelect === 'function') syncBaseSelect();
+  if(opts && opts.pushUrl) rememberBase(key);
+}
+
+/* Keep ?base= in the address bar in step with the picker, so a reload or a
+   bookmark holds the choice. This is the same mechanism the argument already
+   uses, which is why there is no browser storage here: the URL is the state. */
+function rememberBase(key){
+  try{
+    const u = new URL(location.href);
+    if(key === 'dark') u.searchParams.delete('base');
+    else               u.searchParams.set('base', key);
+    history.replaceState(null, '', u);
+  }catch(e){ /* a sandboxed or file:// context refuses this; harmless */ }
+}
+
+applyBasemap(CONFIG.basemap, { rerender:false, pushUrl:false });
 if(CONFIG.showRadar){ radar.addTo(map); radar.bringToFront(); }
 
 const layers = {
@@ -2153,6 +2289,7 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     const on = btn.getAttribute('aria-pressed')==='true';
     btn.setAttribute('aria-pressed', String(!on));
     if(key==='terrain'){
+      terrainTouched = true;          // from here on, the choice is theirs
       CONFIG.showTerrain = !on;
       if(on){ map.removeLayer(terrain); }
       else  { terrain.addTo(map); if(labels) labels.bringToFront(); }
@@ -2186,6 +2323,38 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     }
   };
 });
+/* ---------------------------------------------------------------------------
+   Base-map picker. Options are generated from the BASEMAPS catalogue, so
+   adding a base to that table is the only step needed to offer it here.
+   CARTO requires a key and watermarks anonymous requests, so without one it
+   is listed but disabled rather than quietly missing: a reader who wonders
+   where it went can see why.
+   ------------------------------------------------------------------------- */
+const BASE_LABEL = {
+  dark:'Dark gray', light:'Light gray', relief:'Shaded relief',
+  topo:'Topographic', imagery:'Imagery', osm:'OpenStreetMap', carto:'CARTO dark'
+};
+
+function buildBaseSelect(){
+  const sel = $('#baseSel');
+  if(!sel) return;
+  sel.innerHTML = Object.keys(BASEMAPS).map(k => {
+    const bm = BASEMAPS[k];
+    const off = bm.key && !CONFIG.cartoKey;
+    return `<option value="${k}"${off ? ' disabled' : ''}>${
+      BASE_LABEL[k] || k}${off ? ' — needs key' : ''}</option>`;
+  }).join('');
+  sel.value = CONFIG.basemap;
+  sel.onchange = () => applyBasemap(sel.value, { rerender:true, pushUrl:true });
+}
+
+function syncBaseSelect(){
+  const sel = $('#baseSel');
+  if(sel && sel.value !== CONFIG.basemap) sel.value = CONFIG.basemap;
+}
+
+buildBaseSelect();
+
 // The chip rail is the single visible record of what is on. Drive it from the
 // resolved arguments so a linked URL and the buttons never disagree.
 function syncChips(){
@@ -2273,11 +2442,12 @@ function readArgs(){
   const b = String(q.get('base')||'').trim().toLowerCase();
   if(b && BASEMAPS[b]) CONFIG.basemap = b;
 
-  // Bases that already carry relief do not want the hillshade on top of them,
-  // unless the URL asks for it explicitly.
-  const baseHasTerrain = !!(BASEMAPS[CONFIG.basemap] || {}).terrain;
-  CONFIG.showTerrain = argBool(q.get('terrain'),
-    baseHasTerrain ? false : CONFIG.showTerrain);
+  // An explicit ?terrain= is the person deciding, and it outranks the per-base
+  // default that applyBasemap would otherwise apply. Everything about how the
+  // two interact lives there; this only records that a choice was stated.
+  CONFIG.terrainExplicit = q.has('terrain');
+  if(CONFIG.terrainExplicit)
+    CONFIG.showTerrain = argBool(q.get('terrain'), CONFIG.showTerrain);
 
   return normalizeIdent(q.get('apt'));
 }
