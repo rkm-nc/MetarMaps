@@ -96,6 +96,25 @@
                     cap makes it meaningless.
                     Default: on.
 
+     ?hours=6       Opening position of the time scrub, in hours ahead.
+                    Range 0 to scrubMax. Every forecast layer reads this one
+                    offset — freezing level, winds aloft, G-AIRMET and the
+                    marker on the forecast strip — and moving the slider
+                    issues no request at all, because the hourly data is
+                    already in hand. Station observations never move with it:
+                    at a non-zero offset the dots are visibly stood down and
+                    the control says so.
+                    Default: 0.
+
+     ?route=1A5+AVL+TYS
+                    Open the route panel on this course. Two or more
+                    identifiers, any separator. The course is drawn, fields
+                    within routeWidthNm of it are selected, and the profile
+                    shows terrain, the freezing level at the scrubbed hour,
+                    and each field's reported ceiling converted to MSL.
+                    Nothing is interpolated between fields.
+                    Default: panel closed.
+
      ?tafhours=12   Width of the forecast strip, in hours. Range 3 to 24. The
                     strip body is the governing forecast (the initial group,
                     FM and BECMG); the thin stripe above it is TEMPO or PROB,
@@ -122,6 +141,8 @@
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
      /MetarMaps/?apt=KAVL&tafhours=24   Asheville, full day of forecast
      /MetarMaps/?trend=0                no trend arrows, one request fewer
+     /MetarMaps/?route=1A5+AVL+TYS      a course with its terrain profile
+     /MetarMaps/?hours=6&base=relief    six hours out on shaded relief
      /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
@@ -161,6 +182,11 @@
      trendMovePct  arrow.
      tafHours    Default for ?tafhours=. tafSearch is how many fields outward
      tafSearch     from home to try before giving up on finding one with a TAF.
+     scrubMax    How far ahead the time scrub reaches, in hours. The Open-Meteo
+                 requests ask for three days, so this can be raised well past
+                 the default without costing anything.
+     routeWidthNm  Half-width of the route corridor. A field further than this
+                 from the course is not shown in the profile.
      lowCloudTopFt  The icing inputs. See the freezing-level section.
      cloudThreshold
      frzHours
@@ -191,8 +217,10 @@
    ----------------------------------------------------------------------------
      METAR, TAF            NOAA / Aviation Weather Center   needs the proxy
      AIRMET / SIGMET       NOAA / Aviation Weather Center   needs the proxy
+     G-AIRMET              NOAA / Aviation Weather Center   needs the proxy
      Winds aloft           Open-Meteo pressure levels       cross-origin open
      Freezing level, cloud Open-Meteo                       cross-origin open
+     Route terrain         Open-Meteo 90 m DEM elevation    cross-origin open
      Radar                 NOAA NEXRAD via Iowa State       tiles, no key
      Terrain, base, labels Esri / USGS                      tiles, no key
 
@@ -200,9 +228,7 @@
    so the same code path serves any feed that returns a raw report. Both go
    through one token scanner, parseConditions, because a forecast group and an
    observation body carry the same tokens.
-   ========================================================================== */
-
-<!DOCTYPE html>
+   ========================================================================== */<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -309,6 +335,72 @@
   .row.stale .id,.row.stale .det{color:var(--ink-faint)}
 
   /* ---- legend + status ---- */
+  /* Bottom dock. The time scrub lives here, and the route profile stacks
+     underneath it, so the two never fight for the same corner. */
+  #dock{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:905;
+    width:min(520px,calc(100vw - 20px));display:flex;flex-direction:column;gap:5px;
+    pointer-events:none}
+  #dock > *{pointer-events:auto}
+  #scrub{display:flex;align-items:center;gap:9px;background:var(--panel);
+    border:1px solid var(--line);border-radius:3px;backdrop-filter:blur(10px);
+    padding:6px 10px}
+  #scrub button{appearance:none;background:none;border:1px solid var(--line);
+    color:var(--ink-dim);font:600 11px/1 var(--sans);padding:5px 8px;border-radius:3px;
+    cursor:pointer;flex:none}
+  #scrub button:hover{color:var(--ink);border-color:rgba(140,185,205,.45)}
+  #scrub.off button{color:var(--bg);background:var(--accent);border-color:var(--accent)}
+  #scrubRange{flex:1;min-width:0;appearance:none;-webkit-appearance:none;height:3px;
+    background:linear-gradient(90deg,var(--accent) 0%,rgba(140,185,205,.3) 0%);
+    border-radius:2px;outline:none;margin:0}
+  #scrubRange::-webkit-slider-thumb{appearance:none;width:13px;height:13px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+  #scrubRange::-moz-range-thumb{width:13px;height:13px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+  #scrubRange:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  #scrubRead{flex:none;min-width:84px;text-align:right;font:11px/1.25 var(--mono)}
+  #scrubRead b{display:block;color:var(--ink);font-weight:600;font-size:12px}
+  #scrubRead span{color:var(--ink-faint)}
+  #scrubWarn{background:rgba(255,194,77,.11);border:1px solid rgba(255,194,77,.45);
+    border-radius:3px;padding:5px 9px;font-size:11px;color:#ffd387;backdrop-filter:blur(8px)}
+  #gairNote{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+    padding:5px 9px;font:11px var(--mono);color:var(--ink-dim);backdrop-filter:blur(8px)}
+
+  /* Route panel */
+  #route{background:var(--panel);border:1px solid var(--line);border-radius:3px;
+    backdrop-filter:blur(10px);padding:8px 10px 9px}
+  #route .rrow{display:flex;gap:6px;align-items:center}
+  #routeIn{flex:1;min-width:0;background:rgba(9,23,32,.55);border:1px solid var(--line);
+    border-radius:3px;color:var(--ink);font:600 12px/1 var(--mono);letter-spacing:.06em;
+    padding:7px 8px;outline:none;text-transform:uppercase}
+  #routeIn::placeholder{color:var(--ink-faint);letter-spacing:.04em}
+  #routeIn:focus{border-color:var(--accent)}
+  #route button{appearance:none;background:none;border:1px solid var(--line);
+    color:var(--ink-dim);font:600 11px/1 var(--sans);padding:7px 10px;border-radius:3px;
+    cursor:pointer;flex:none}
+  #route button:hover{color:var(--ink);border-color:rgba(140,185,205,.45)}
+  #routeGo{color:var(--accent)!important;border-color:rgba(89,212,232,.5)!important}
+  #routeMsg{font:11px/1.35 var(--mono);color:var(--ink-dim);margin-top:5px;min-height:14px}
+  #routeMsg.bad{color:#ffb4a8}
+  #routeProf{margin-top:4px}
+  svg.prof{display:block;width:100%;height:auto}
+  svg.prof .pl{font:9px/1 var(--mono);fill:var(--ink-faint)}
+  svg.prof .pl.wp{font-weight:600;fill:var(--accent)}
+  svg.prof .pl.ax{font-size:8px}
+  #route .rkey{margin-top:5px;font-size:10.5px;line-height:1.4;color:var(--ink-faint)}
+
+  /* With the profile open the dock takes the full width and the reference
+     panels stand aside; the profile is active work, the legend is not. */
+  body.routeopen #dock{left:10px;right:10px;transform:none;
+    width:auto;max-width:none}
+  body.routeopen #legend{display:none}
+  body.routeopen #obs{display:none}
+  body.routeopen #status{bottom:auto;top:10px;right:168px;max-width:min(380px,calc(100vw - 350px))}
+
+  /* At a non-zero offset the station dots are still observations, so they are
+     visibly stood down rather than left to imply a forecast. */
+  body.scrubbed .stn{opacity:.4}
+  body.scrubbed #obs,body.scrubbed #home .cat,body.scrubbed #home .grid{opacity:.5}
+
   #legend{position:absolute;left:10px;bottom:10px;z-index:900;display:flex;flex-wrap:wrap;gap:4px 11px;
     align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:3px;
     padding:5px 9px;font-size:11px;color:var(--ink-dim);backdrop-filter:blur(8px);max-width:calc(100vw - 20px)}
@@ -372,6 +464,13 @@
     #obs{display:none}
     #legend{display:none}
     .leaflet-control-zoom{display:none}
+    /* The home card owns the bottom on a phone, so the dock sits above it. */
+    #dock{bottom:auto;top:10px;left:10px;right:166px;transform:none;width:auto}
+    #scrubRead{min-width:68px}
+    body.routeopen #dock{top:10px;bottom:auto;left:10px;right:10px}
+    body.routeopen #home{display:none}
+    body.routeopen #status{display:none}
+    #route .rkey{display:none}
   }
   /* ?help — plain text, no map */
   body.helpmode{height:auto;overflow:auto;background:var(--bg)}
@@ -424,7 +523,10 @@
   <button class="chip" data-layer="barbs" aria-pressed="true">APT wind</button>
   <button class="chip" data-layer="frz" aria-pressed="false">Freezing level</button>
   <button class="chip" data-layer="trend" aria-pressed="true">Trend</button>
+  <button class="chip" data-layer="gairmet" aria-pressed="false">G-AIRMET</button>
   <button class="chip" data-layer="airsig" aria-pressed="false">AIRMET / SIGMET</button>
+  <div class="rail-gap"></div>
+  <button class="chip" id="routeChip" aria-pressed="false">Route</button>
   <div class="rail-gap"></div>
   <button class="chip" id="refresh">Refresh</button>
   <button class="chip" id="fs">Full screen</button>
@@ -435,6 +537,31 @@
     <button id="obsToggle" title="Collapse">–</button></div>
   <div id="obsList"></div>
 </aside>
+
+<div id="dock">
+  <div id="scrub">
+    <button id="scrubNow" title="Back to current conditions">Now</button>
+    <input id="scrubRange" type="range" min="0" max="24" step="1" value="0"
+           aria-label="Forecast hours ahead">
+    <div id="scrubRead"><b id="scrubAt">now</b><span id="scrubOff"></span></div>
+  </div>
+  <div id="scrubWarn" hidden></div>
+  <div id="gairNote" hidden></div>
+  <section id="route" hidden>
+    <div class="rrow">
+      <input id="routeIn" type="text" placeholder="1A5 AVL TYS"
+             aria-label="Route identifiers" autocomplete="off" spellcheck="false">
+      <button id="routeGo">Plot</button>
+      <button id="routeClear" title="Clear the route">&times;</button>
+    </div>
+    <div id="routeMsg"></div>
+    <div id="routeProf"></div>
+    <div class="rkey">Filled section is terrain. Dashed line is the freezing
+      level at the scrubbed hour. Bars are reported ceilings converted to MSL;
+      a hollow circle means no ceiling reported. Nothing is interpolated
+      between fields.</div>
+  </section>
+</div>
 
 <div id="legend">
   <span><i style="background:var(--vfr)"></i>VFR</span>
@@ -547,6 +674,25 @@
                     cap makes it meaningless.
                     Default: on.
 
+     ?hours=6       Opening position of the time scrub, in hours ahead.
+                    Range 0 to scrubMax. Every forecast layer reads this one
+                    offset — freezing level, winds aloft, G-AIRMET and the
+                    marker on the forecast strip — and moving the slider
+                    issues no request at all, because the hourly data is
+                    already in hand. Station observations never move with it:
+                    at a non-zero offset the dots are visibly stood down and
+                    the control says so.
+                    Default: 0.
+
+     ?route=1A5+AVL+TYS
+                    Open the route panel on this course. Two or more
+                    identifiers, any separator. The course is drawn, fields
+                    within routeWidthNm of it are selected, and the profile
+                    shows terrain, the freezing level at the scrubbed hour,
+                    and each field's reported ceiling converted to MSL.
+                    Nothing is interpolated between fields.
+                    Default: panel closed.
+
      ?tafhours=12   Width of the forecast strip, in hours. Range 3 to 24. The
                     strip body is the governing forecast (the initial group,
                     FM and BECMG); the thin stripe above it is TEMPO or PROB,
@@ -573,6 +719,8 @@
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
      /MetarMaps/?apt=KAVL&tafhours=24   Asheville, full day of forecast
      /MetarMaps/?trend=0                no trend arrows, one request fewer
+     /MetarMaps/?route=1A5+AVL+TYS      a course with its terrain profile
+     /MetarMaps/?hours=6&base=relief    six hours out on shaded relief
      /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
@@ -612,6 +760,11 @@
      trendMovePct  arrow.
      tafHours    Default for ?tafhours=. tafSearch is how many fields outward
      tafSearch     from home to try before giving up on finding one with a TAF.
+     scrubMax    How far ahead the time scrub reaches, in hours. The Open-Meteo
+                 requests ask for three days, so this can be raised well past
+                 the default without costing anything.
+     routeWidthNm  Half-width of the route corridor. A field further than this
+                 from the course is not shown in the profile.
      lowCloudTopFt  The icing inputs. See the freezing-level section.
      cloudThreshold
      frzHours
@@ -642,8 +795,10 @@
    ----------------------------------------------------------------------------
      METAR, TAF            NOAA / Aviation Weather Center   needs the proxy
      AIRMET / SIGMET       NOAA / Aviation Weather Center   needs the proxy
+     G-AIRMET              NOAA / Aviation Weather Center   needs the proxy
      Winds aloft           Open-Meteo pressure levels       cross-origin open
      Freezing level, cloud Open-Meteo                       cross-origin open
+     Route terrain         Open-Meteo 90 m DEM elevation    cross-origin open
      Radar                 NOAA NEXRAD via Iowa State       tiles, no key
      Terrain, base, labels Esri / USGS                      tiles, no key
 
@@ -711,7 +866,20 @@ const CONFIG = {
   // the figure below and, over these mountains, is where a piston twin lives.
   lowCloudTopFt: 9840,
   cloudThreshold: 40,        // percent cover treated as a meaningful deck
-  frzHours: 0,               // hour offset into the forecast; 0 is now
+
+  // Route corridor. How far either side of the course a field still counts as
+  // relevant. 25 nm is about the distance over which a mountain field's
+  // conditions still say something about the course.
+  routeWidthNm: 25,
+
+  scrubOpen: 0,              // default for ?hours=
+  routeOpen: '',             // default for ?route=
+
+  // Time scrub. Open-Meteo returns days of hourly data in one response; the
+  // app used to read the index for "now" and discard the rest. scrubMax is how
+  // far forward the slider reaches, in hours, and every forecast layer reads
+  // the same offset, so moving it costs no request at all.
+  scrubMax: 24,
 
   // Trend. A field at MVFR and deteriorating is a different decision from one
   // at MVFR and improving, and a current observation cannot tell you which.
@@ -1059,6 +1227,17 @@ OPTIONS
                    request and is skipped when zoomed out past 14 degrees.
                    default: on
 
+  hours=<n>        Opening position of the time scrub, in hours ahead.
+                   One offset drives the freezing level, the winds aloft,
+                   G-AIRMET and the marker on the forecast strip. Moving it
+                   costs no request: the hourly data is already loaded.
+                   Station observations do NOT move with it.
+                   default: 0
+
+  route=<idents>   Open the route panel on this course, e.g. route=1A5+AVL+TYS.
+                   Two or more identifiers, any separator.
+                   default: closed
+
   tafhours=<n>     Width of the forecast strip, in hours. Range 3 to 24.
                    default: 12
 
@@ -1104,7 +1283,22 @@ WHAT THE READOUTS MEAN
   Forecast   Strip body is the governing forecast. The thin stripe above it is
              TEMPO or PROB: a stated risk inside the period, not a forecast of
              it. Most small fields issue no TAF, so the home card shows the
-             nearest field that does and names it.
+             nearest field that does and names it. A cyan outline marks the
+             hour the time scrub is sitting on.
+  Scrub      One hour offset, read by every forecast layer. Observations
+             cannot be aged forward, so at a non-zero offset the station dots
+             are dimmed and the control says plainly that they have not moved.
+  G-AIRMET   Graphical AIRMET, published at 0, 3, 6, 9 and 12 hours. The scrub
+             selects the step at or BEFORE the chosen hour, never the nearest,
+             because a later snapshot shown for an earlier time would forecast
+             backwards.
+  Route      Filled section is terrain, sampled continuously from a 90 m DEM.
+             Dashed line is the freezing level at the scrubbed hour. Bars are
+             reported ceilings converted to MSL by adding field elevation,
+             which is what puts cloud and ridge on one axis. A hollow circle
+             means no ceiling was reported. Nothing is interpolated between
+             fields: a smooth ceiling surface fitted across this terrain would
+             be an invention.
 
 BEHAVIOUR WORTH KNOWING
   An identifier that resolves to nothing leaves the map on the default field
@@ -1327,9 +1521,14 @@ const layers = {
   wind3k   : L.layerGroup(),
   wind10k  : L.layerGroup(),
   frz      : L.layerGroup(),
+  gairmet  : L.layerGroup(),
   airsig   : L.layerGroup()
 };
 let showBarbs = true;
+
+/* Hours forward of now that every forecast layer reads. Observations never
+   move with it — see the note the control shows whenever it is not zero. */
+let scrubH = 0;
 
 // 5 nm ring around the home field, repositioned once the field is resolved
 const homeRing = L.circle([CONFIG.home.lat,CONFIG.home.lon],{radius:9260,
@@ -1732,6 +1931,11 @@ async function loadMetars(force){
   loadFrz();                       // the card needs this whether the overlay is on
   loadTrend();                     // fails soft; a station simply gets no arrow
   findHomeTaf().then(r => { if(r) renderHome(); });
+  if(routeLegs){                   // corridor membership follows the new data
+    routeStations = corridorStations(routeLegs, CONFIG.routeWidthNm);
+    renderRouteProfile();
+  }
+  if(map.hasLayer(layers.gairmet)) loadGairmet();
   if(map.hasLayer(layers.airsig))  loadAirSig();
 
   const t = new Date();
@@ -1758,6 +1962,22 @@ function windGrid(n=5){
   return pts;
 }
 
+/* Fetching and drawing are separate for every forecast layer, which is what
+   makes the scrub free: the response holds every hour, so moving the slider
+   re-reads an array index rather than asking the server again. */
+let windData = { wind3k:null, wind10k:null };
+
+/* Index into an Open-Meteo hourly array for now plus an offset. The series
+   starts at midnight UTC of the current day, so "now" has to be found rather
+   than assumed, and the result is clamped to what the response actually holds. */
+function hourIndex(times, offsetH){
+  if(!times || !times.length) return 0;
+  const nowH = new Date().toISOString().slice(0,13);
+  let k = times.findIndex(t => t.slice(0,13) === nowH);
+  if(k < 0) k = 0;
+  return Math.max(0, Math.min(k + (offsetH|0), times.length - 1));
+}
+
 async function loadWinds(key){
   const lvl = WIND_LEVELS[key];
   const pts = windGrid(5);
@@ -1765,34 +1985,39 @@ async function loadWinds(key){
     + '?latitude='  + pts.map(p=>p[0].toFixed(3)).join(',')
     + '&longitude=' + pts.map(p=>p[1].toFixed(3)).join(',')
     + `&hourly=wind_speed_${lvl.hpa}hPa,wind_direction_${lvl.hpa}hPa,temperature_${lvl.hpa}hPa`
-    + '&wind_speed_unit=kn&forecast_days=1&timezone=UTC';
+    + '&wind_speed_unit=kn&forecast_days=3&timezone=UTC';
   let js;
   try{ const r = await fetch(url); js = await r.json(); }
-  catch(e){ setStatus('Winds aloft unavailable: '+e.message, true); return; }
+  catch(e){ console.warn('winds aloft:', e.message); return; }
 
   const arr = Array.isArray(js) ? js : [js];
-  const hourIdx = (() => {
-    const now = new Date().toISOString().slice(0,13);
-    const times = arr[0].hourly.time;
-    const k = times.findIndex(t=>t.slice(0,13)===now);
-    return k>-1 ? k : 0;
-  })();
+  if(!arr.length || !arr[0].hourly){ console.warn('winds aloft: no hourly block'); return; }
+  windData[key] = { pts, arr };
+  windLoaded[key] = true;
+  renderWinds(key);
+}
 
+function renderWinds(key){
+  const d = windData[key];
+  if(!d) return;
+  const lvl = WIND_LEVELS[key];
+  const idx = hourIndex(d.arr[0].hourly.time, scrubH);
   layers[key].clearLayers();
-  arr.forEach((g,n)=>{
+  d.arr.forEach((g,n) => {
+    if(n >= d.pts.length || !g.hourly) return;
     const h = g.hourly;
-    const spd = Math.round(h[`wind_speed_${lvl.hpa}hPa`][hourIdx]);
-    const dir = Math.round(h[`wind_direction_${lvl.hpa}hPa`][hourIdx]);
-    const tmp = Math.round(h[`temperature_${lvl.hpa}hPa`][hourIdx]);
+    const spd = Math.round(h[`wind_speed_${lvl.hpa}hPa`][idx]);
+    const dir = Math.round(h[`wind_direction_${lvl.hpa}hPa`][idx]);
+    const tmp = Math.round(h[`temperature_${lvl.hpa}hPa`][idx]);
+    if(!isFinite(spd) || !isFinite(dir)) return;
     const html = `<svg width="80" height="80" viewBox="-40 -40 80 80">
       ${barbSVG(dir,spd,null,'#8fd3e6')}
       <text x="8" y="12" font-size="9">${spd}kt ${tmp}°</text></svg>`;
-    L.marker([pts[n][0],pts[n][1]],{
+    L.marker([d.pts[n][0], d.pts[n][1]], {
       icon:L.divIcon({className:'windpt',html,iconSize:[80,80],iconAnchor:[40,40]}),
       interactive:false
     }).addTo(layers[key]);
   });
-  windLoaded[key] = true;
 }
 
 /* ============================================================================
@@ -1946,6 +2171,15 @@ function tafStrip(taf, hours, width){
   }
   if(!any) return '';
 
+  // The scrubbed hour is marked on the strip, so the slider and the forecast
+  // are visibly reading the same instant.
+  let cursor = '';
+  if(scrubH > 0 && scrubH < H){
+    const x = (scrubH*cw).toFixed(2);
+    cursor = `<rect x="${x}" y="${padT-1}" width="${(cw+0.5).toFixed(2)}"
+      height="${barH+2}" fill="none" stroke="#59d4e8" stroke-width="1.4"/>`;
+  }
+
   for(let k = 0; k <= H; k += 3){
     const when = new Date(t0.getTime() + k*3600e3);
     const x = Math.min(k*cw, W - 0.5);
@@ -1956,7 +2190,7 @@ function tafStrip(taf, hours, width){
         pad(when.getHours())}</text>`;
   }
   return `<svg class="tafstrip" width="${W}" height="${padT+barH+15}"
-    viewBox="0 0 ${W} ${padT+barH+15}">${stripe}${body}${ticks}</svg>`;
+    viewBox="0 0 ${W} ${padT+barH+15}">${stripe}${body}${cursor}${ticks}</svg>`;
 }
 
 /* ---- fetching ----------------------------------------------------------- */
@@ -2142,6 +2376,8 @@ const FRZ_WORDS = {
   sfc:   'freezing level at the surface'
 };
 
+let frzData = null;      // { pts, arr } held so the scrub costs no request
+
 async function loadFrz(force){
   // Boot and the first station load both want this, and a pan can ask again
   // before the previous answer lands. One forecast run covers a minute easily,
@@ -2156,7 +2392,7 @@ async function loadFrz(force){
     + '?latitude='  + all.map(p=>p[0].toFixed(3)).join(',')
     + '&longitude=' + all.map(p=>p[1].toFixed(3)).join(',')
     + '&hourly=freezing_level_height,cloud_cover_low,cloud_cover_mid'
-    + '&forecast_days=2&timezone=UTC';
+    + '&forecast_days=3&timezone=UTC';
 
   let js;
   try{ const r = await fetch(url); js = await r.json(); }
@@ -2166,33 +2402,38 @@ async function loadFrz(force){
   if(!arr.length || !arr[0].hourly){ frzAt = 0;
     console.warn('freezing level: no hourly block'); return; }
 
+  frzData = { pts, arr };
+  renderFrz();
+}
+
+/* Read one grid point at the scrubbed hour. */
+function frzRow(g, idx, times){
+  const h = g.hourly;
+  const m = h.freezing_level_height ? h.freezing_level_height[idx] : null;
+  return { frzFt: m == null ? null : Math.round(m * M_TO_FT),
+           low:  h.cloud_cover_low ? h.cloud_cover_low[idx] : null,
+           mid:  h.cloud_cover_mid ? h.cloud_cover_mid[idx] : null,
+           at:   times[idx] };
+}
+
+function renderFrz(){
+  if(!frzData) return;
+  const { pts, arr } = frzData;
   const times = arr[0].hourly.time;
-  const nowH  = new Date().toISOString().slice(0,13);
-  let k = times.findIndex(t => t.slice(0,13) === nowH);
-  if(k < 0) k = 0;
-  k = Math.min(k + (CONFIG.frzHours|0), times.length - 1);
+  const idx = hourIndex(times, scrubH);
 
-  const read = g => {
-    const h = g.hourly;
-    const m = h.freezing_level_height ? h.freezing_level_height[k] : null;
-    return { frzFt: m == null ? null : Math.round(m * M_TO_FT),
-             low:  h.cloud_cover_low ? h.cloud_cover_low[k] : null,
-             mid:  h.cloud_cover_mid ? h.cloud_cover_mid[k] : null,
-             at:   times[k] };
-  };
-
-  // last entry is the home field
-  const homeRow = arr.length > pts.length ? read(arr[arr.length-1]) : null;
-  if(homeRow){
-    homeRow.cls = frzClass(homeRow.frzFt, homeRow.low, homeRow.mid,
-                           CONFIG.home.elev);
-    frzHome = homeRow;
+  // Last entry is the home field, appended to the grid request.
+  if(arr.length > pts.length){
+    const row = frzRow(arr[arr.length-1], idx, times);
+    row.cls = frzClass(row.frzFt, row.low, row.mid, CONFIG.home.elev);
+    frzHome = row;
     renderHome();
   }
 
   layers.frz.clearLayers();
   for(let n = 0; n < pts.length && n < arr.length; n++){
-    const r = read(arr[n]);
+    if(!arr[n].hourly) continue;
+    const r = frzRow(arr[n], idx, times);
     if(r.frzFt == null) continue;
     const cls = frzClass(r.frzFt, r.low, r.mid, null);
     const deck = Math.max(r.low || 0, r.mid || 0);
@@ -2208,6 +2449,454 @@ async function loadFrz(force){
       icon: L.divIcon({ className:'frzpt', html, iconSize:[86,46], iconAnchor:[43,23] }),
       interactive: false
     }).addTo(layers.frz);
+  }
+}
+
+/* ============================================================================
+   Route corridor and terrain profile
+   ----------------------------------------------------------------------------
+   Enter two or more identifiers. The course is drawn, the station list is
+   narrowed to fields within a cross-track distance of it, and a profile is
+   drawn underneath: terrain as a filled section, the freezing level as a line
+   at the scrubbed hour, and each corridor field's reported ceiling converted
+   to MSL and plotted at its along-track position.
+
+   The ceiling conversion is the point of the whole thing. A METAR reports
+   ceiling above the field; the terrain is in feet above sea level. Adding the
+   field elevation puts both on one axis, and where the ceiling marks sink into
+   the terrain section is where the cloud is on the ridge.
+
+   NOTHING IS INTERPOLATED BETWEEN STATIONS. Ceilings are drawn as discrete
+   marks at the fields that reported them, because a smooth surface fitted
+   across this terrain would be an invention. The terrain itself is continuous
+   because it is sampled continuously: Open-Meteo returns the 90 m DEM
+   elevation for every coordinate requested, which is also how the freezing
+   level is sampled along the course. One request covers both.
+   ========================================================================== */
+
+const ROUTE_SAMPLES = 40;      // coordinates per Open-Meteo request
+
+let routeLegs   = null;        // [{id, lat, lon, elev, along}]
+let routeLine   = null;        // the drawn polyline
+let routeBand   = null;        // layer group holding the waypoint markers
+let routeProfile = null;       // { pts, dist, arr } from Open-Meteo
+let routeStations = [];        // corridor members with along-track distance
+
+/* Great-circle interpolation. Linear interpolation in lat/lon would be close
+   enough over a few hundred miles, but the whole feature is a claim about
+   where terrain sits under a course line, so the course is computed properly. */
+function gcPoint(a, b, f){
+  const p1 = toRad(a[0]), l1 = toRad(a[1]), p2 = toRad(b[0]), l2 = toRad(b[1]);
+  const d = 2*Math.asin(Math.sqrt(
+    Math.sin((p2-p1)/2)**2 + Math.cos(p1)*Math.cos(p2)*Math.sin((l2-l1)/2)**2));
+  if(d < 1e-9) return [a[0], a[1]];
+  const A = Math.sin((1-f)*d)/Math.sin(d), B = Math.sin(f*d)/Math.sin(d);
+  const x = A*Math.cos(p1)*Math.cos(l1) + B*Math.cos(p2)*Math.cos(l2);
+  const y = A*Math.cos(p1)*Math.sin(l1) + B*Math.cos(p2)*Math.sin(l2);
+  const z = A*Math.sin(p1)                + B*Math.sin(p2);
+  return [toDeg(Math.atan2(z, Math.hypot(x,y))), toDeg(Math.atan2(y,x))];
+}
+
+/* Local flat projection in nautical miles, for cross-track arithmetic only.
+   Over a corridor a few tens of miles wide the distortion is far below the
+   precision anyone would act on. */
+function nmXY(lat, lon, lat0, lon0){
+  return { x:(lon-lon0)*60*Math.cos(toRad(lat0)), y:(lat-lat0)*60 };
+}
+
+/* Perpendicular distance from a point to a segment, plus how far along it the
+   foot of that perpendicular falls. */
+function crossTrack(p, a, b){
+  const dx = b.x-a.x, dy = b.y-a.y, L2 = dx*dx + dy*dy;
+  let t = L2 ? ((p.x-a.x)*dx + (p.y-a.y)*dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = a.x + t*dx, cy = a.y + t*dy;
+  return { cross: Math.hypot(p.x-cx, p.y-cy), along: t*Math.sqrt(L2) };
+}
+
+/* Narrow the station set to the corridor and give each member its distance
+   along the course, which is its x position on the profile. */
+function corridorStations(legs, widthNm){
+  const out = [];
+  for(const st of stations.values()){
+    if(st.lat == null || st.lon == null) continue;
+    let best = null;
+    for(let i = 0; i + 1 < legs.length; i++){
+      const o = legs[i];
+      const a = nmXY(o.lat, o.lon, o.lat, o.lon);
+      const b = nmXY(legs[i+1].lat, legs[i+1].lon, o.lat, o.lon);
+      const q = nmXY(st.lat, st.lon, o.lat, o.lon);
+      const r = crossTrack(q, a, b);
+      const cand = { cross:r.cross, along:o.along + r.along };
+      if(!best || cand.cross < best.cross) best = cand;
+    }
+    if(best && best.cross <= widthNm)
+      out.push(Object.assign({ st }, best));
+  }
+  return out.sort((a,b) => a.along - b.along);
+}
+
+/* Resolve identifiers to coordinates. Both endpoints used here are already on
+   the Worker's allow list. metar carries lat/lon/elev for anything reporting;
+   stationinfo covers a field that is not. */
+async function resolveRoute(ids){
+  const found = new Map();
+  const want = ids.filter(Boolean);
+  if(!want.length) return found;
+  for(const path of ['metar?ids=' + want.join(',') + '&format=json',
+                     'stationinfo?ids=' + want.join(',') + '&format=json']){
+    const missing = want.filter(i => !found.has(i));
+    if(!missing.length) break;
+    let r;
+    try{ r = await awc(path); }catch(e){ continue; }
+    if(!Array.isArray(r)) r = r ? [r] : [];
+    for(const d of r){
+      const id = d.icaoId || d.station_id || d.id;
+      if(!id || found.has(id)) continue;
+      if(d.lat == null || d.lon == null) continue;
+      found.set(id, { id, lat:+d.lat, lon:+d.lon,
+                      elev: d.elev != null ? +d.elev * M_TO_FT : null });
+    }
+  }
+  return found;
+}
+
+async function setRoute(text){
+  const ids = String(text||'').toUpperCase().split(/[^A-Z0-9]+/)
+    .map(normalizeIdent).filter(Boolean);
+  if(ids.length < 2){ routeStatus('Enter two or more identifiers, e.g. 1A5 AVL TYS.', true); return; }
+
+  routeStatus('Resolving ' + ids.join(' ') + '…');
+  const found = await resolveRoute(ids);
+  const legs = [];
+  const unknown = [];
+  for(const id of ids){
+    const f = found.get(id);
+    if(f) legs.push(Object.assign({}, f)); else unknown.push(id);
+  }
+  if(legs.length < 2){
+    routeStatus('Could not place ' + (unknown.join(', ') || 'those identifiers') + '.', true);
+    return;
+  }
+
+  // Cumulative along-track distance at each waypoint.
+  legs[0].along = 0;
+  let total = 0;
+  for(let i = 1; i < legs.length; i++){
+    total += distNM(legs[i-1].lat, legs[i-1].lon, legs[i].lat, legs[i].lon);
+    legs[i].along = total;
+  }
+  routeLegs = legs;
+  routeLegs.total = total;
+
+  drawRoute();
+  routeStations = corridorStations(legs, CONFIG.routeWidthNm);
+  await loadRouteProfile();
+  renderRouteProfile();
+  routeStatus(legs.map(l=>l.id).join(' → ') + ' · ' + Math.round(total) + ' nm · '
+    + routeStations.length + ' field' + (routeStations.length===1?'':'s')
+    + ' within ' + CONFIG.routeWidthNm + ' nm'
+    + (unknown.length ? ' · skipped ' + unknown.join(', ') : ''));
+  map.fitBounds(L.latLngBounds(legs.map(l=>[l.lat,l.lon])), { padding:[60,60] });
+}
+
+function drawRoute(){
+  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
+  if(routeBand){ map.removeLayer(routeBand); routeBand = null; }
+  if(!routeLegs) return;
+  // Draw each leg as its great circle rather than a straight screen line.
+  const path = [];
+  for(let i = 0; i + 1 < routeLegs.length; i++){
+    const a = [routeLegs[i].lat, routeLegs[i].lon];
+    const b = [routeLegs[i+1].lat, routeLegs[i+1].lon];
+    for(let k = 0; k <= 24; k++) path.push(gcPoint(a, b, k/24));
+  }
+  routeLine = L.polyline(path, { color:'#59d4e8', weight:2.2, opacity:.95 }).addTo(map);
+  // Waypoint markers go in a group of their own so the whole route tears down
+  // in two removeLayer calls.
+  routeBand = L.layerGroup().addTo(map);
+  for(const l of routeLegs)
+    L.circleMarker([l.lat,l.lon], { radius:4, color:'#59d4e8', weight:2,
+      fillColor:'#091720', fillOpacity:1 })
+      .bindTooltip(l.id).addTo(routeBand);
+}
+
+/* Terrain and freezing level along the course, in one Open-Meteo request. */
+async function loadRouteProfile(){
+  routeProfile = null;
+  if(!routeLegs) return;
+  const legs = routeLegs, total = legs.total;
+  const pts = [], dist = [];
+  for(let k = 0; k < ROUTE_SAMPLES; k++){
+    const d = total * k / (ROUTE_SAMPLES - 1);
+    // Find the leg this distance falls in and interpolate within it.
+    let i = 0;
+    while(i + 2 < legs.length && legs[i+1].along < d) i++;
+    const segLen = legs[i+1].along - legs[i].along;
+    const f = segLen > 0 ? (d - legs[i].along) / segLen : 0;
+    pts.push(gcPoint([legs[i].lat,legs[i].lon], [legs[i+1].lat,legs[i+1].lon],
+                     Math.max(0, Math.min(1, f))));
+    dist.push(d);
+  }
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + '?latitude='  + pts.map(q=>q[0].toFixed(4)).join(',')
+    + '&longitude=' + pts.map(q=>q[1].toFixed(4)).join(',')
+    + '&hourly=freezing_level_height&forecast_days=3&timezone=UTC';
+  let js;
+  try{ const r = await fetch(url); js = await r.json(); }
+  catch(e){ console.warn('route profile:', e.message); return; }
+  const arr = Array.isArray(js) ? js : [js];
+  if(!arr.length) return;
+  routeProfile = { pts, dist, arr };
+}
+
+/* The profile. Internal coordinates are fixed and the SVG scales to its box,
+   so nothing has to be measured. */
+const PROF = { w:900, h:168, l:44, r:12, t:10, b:26 };
+
+function renderRouteProfile(){
+  const host = $('#routeProf');
+  if(!host) return;
+  if(!routeLegs || !routeProfile){ host.innerHTML = ''; return; }
+
+  const { dist, arr } = routeProfile;
+  const times = arr[0] && arr[0].hourly ? arr[0].hourly.time : null;
+  const idx = times ? hourIndex(times, scrubH) : 0;
+
+  // Terrain comes back as a per-location elevation in metres.
+  const terr = arr.map(g => g && g.elevation != null ? g.elevation * M_TO_FT : null);
+  const frz  = arr.map(g => (g && g.hourly && g.hourly.freezing_level_height)
+    ? g.hourly.freezing_level_height[idx] * M_TO_FT : null);
+
+  // Ceilings, converted to MSL. This is the conversion the feature exists for.
+  const marks = [];
+  for(const m of routeStations){
+    const st = m.st, pr = st.parsed;
+    if(!pr || st.cat === 'NONE') continue;
+    marks.push({ along:m.along, cross:m.cross, st,
+      msl: (pr.ceiling != null && st.elev != null) ? st.elev + pr.ceiling : null,
+      fieldFt: st.elev });
+  }
+
+  const total = routeLegs.total || 1;
+  const tops = [
+    ...terr.filter(v=>v!=null),
+    ...frz.filter(v=>v!=null),
+    ...marks.map(m=>m.msl).filter(v=>v!=null)
+  ];
+  const yMax = Math.max(6000, Math.ceil((Math.max(...tops, 0) * 1.15) / 1000) * 1000);
+
+  const X = d => PROF.l + (d/total) * (PROF.w - PROF.l - PROF.r);
+  const Y = v => PROF.h - PROF.b - (v/yMax) * (PROF.h - PROF.t - PROF.b);
+
+  // terrain section
+  let terrPath = '';
+  terr.forEach((v,i) => {
+    if(v == null) return;
+    terrPath += (terrPath ? 'L' : 'M') + X(dist[i]).toFixed(1) + ',' + Y(v).toFixed(1) + ' ';
+  });
+  const terrFill = terrPath
+    ? `<path d="${terrPath}L${X(total).toFixed(1)},${Y(0).toFixed(1)} L${X(0).toFixed(1)},${Y(0).toFixed(1)} Z"
+         fill="#2c4455" stroke="none"/>
+       <path d="${terrPath}" fill="none" stroke="#6f93a6" stroke-width="1.2"/>` : '';
+
+  // freezing level
+  let frzPath = '';
+  frz.forEach((v,i) => {
+    if(v == null) return;
+    frzPath += (frzPath ? 'L' : 'M') + X(dist[i]).toFixed(1) + ',' + Y(v).toFixed(1) + ' ';
+  });
+  const frzLine = frzPath
+    ? `<path d="${frzPath}" fill="none" stroke="#9fd8ff" stroke-width="1.5"
+         stroke-dasharray="7 4"/>
+       <text class="pl" x="${PROF.w-PROF.r-2}" y="${
+         Math.max(PROF.t+8, Y(frz[frz.length-1] || 0) - 4).toFixed(1)
+       }" text-anchor="end" fill="#9fd8ff">0 °C</text>` : '';
+
+  // gridlines every 2,000 ft
+  let grid = '';
+  for(let v = 0; v <= yMax; v += 2000){
+    grid += `<line x1="${PROF.l}" y1="${Y(v).toFixed(1)}" x2="${PROF.w-PROF.r}"
+      y2="${Y(v).toFixed(1)}" stroke="rgba(140,185,205,.16)" stroke-width="1"/>`;
+    grid += `<text class="pl" x="${PROF.l-5}" y="${(Y(v)+3).toFixed(1)}"
+      text-anchor="end">${v/1000}</text>`;
+  }
+
+  // ceiling marks and field ticks
+  let ceil = '';
+  for(const m of marks){
+    const x = X(m.along), c = CAT_COLOR[m.st.cat];
+    if(m.msl != null){
+      ceil += `<line x1="${(x-9).toFixed(1)}" y1="${Y(m.msl).toFixed(1)}"
+        x2="${(x+9).toFixed(1)}" y2="${Y(m.msl).toFixed(1)}"
+        stroke="${c}" stroke-width="2.4"/>`;
+      // a hairline down to the field, so the mark is anchored to its station
+      if(m.fieldFt != null)
+        ceil += `<line x1="${x.toFixed(1)}" y1="${Y(m.msl).toFixed(1)}"
+          x2="${x.toFixed(1)}" y2="${Y(m.fieldFt).toFixed(1)}"
+          stroke="${c}" stroke-width="0.7" opacity=".45"/>`;
+    }else{
+      // Reported clear, or no ceiling: a small open tick at the top rather
+      // than a silent omission.
+      ceil += `<circle cx="${x.toFixed(1)}" cy="${(PROF.t+5).toFixed(1)}" r="2.6"
+        fill="none" stroke="${c}" stroke-width="1.3"/>`;
+    }
+    ceil += `<text class="pl" x="${x.toFixed(1)}" y="${PROF.h-PROF.b+11}"
+      text-anchor="middle" fill="${c}">${m.st.id.replace(/^K/,'')}</text>`;
+  }
+
+  // waypoints along the bottom
+  let wps = '';
+  for(const l of routeLegs){
+    const x = X(l.along);
+    wps += `<line x1="${x.toFixed(1)}" y1="${PROF.t}" x2="${x.toFixed(1)}"
+      y2="${PROF.h-PROF.b}" stroke="#59d4e8" stroke-width="1" opacity=".45"/>`;
+    wps += `<text class="pl wp" x="${x.toFixed(1)}" y="${PROF.h-PROF.b+22}"
+      text-anchor="middle">${l.id}</text>`;
+  }
+
+  host.innerHTML =
+    `<svg viewBox="0 0 ${PROF.w} ${PROF.h}" class="prof" role="img"
+       aria-label="Terrain and ceiling profile along the route">
+       ${grid}${terrFill}${frzLine}${wps}${ceil}
+       <text class="pl ax" x="${PROF.l-5}" y="${PROF.t+4}" text-anchor="end">kft</text>
+       <text class="pl ax" x="${PROF.w-PROF.r}" y="${PROF.h-2}" text-anchor="end">${
+         Math.round(total)} nm</text>
+     </svg>`;
+}
+
+function clearRoute(){
+  routeLegs = null; routeProfile = null; routeStations = [];
+  if(routeLine){ map.removeLayer(routeLine); routeLine = null; }
+  if(routeBand){ map.removeLayer(routeBand); routeBand = null; }
+  renderRouteProfile();
+  routeStatus('');
+}
+
+function routeStatus(msg, bad){
+  const e = $('#routeMsg');
+  if(!e) return;
+  e.textContent = msg || '';
+  e.className = bad ? 'bad' : '';
+}
+
+/* ============================================================================
+   G-AIRMET
+   ----------------------------------------------------------------------------
+   The graphical AIRMET is the same hazard information as the text product, but
+   issued as discrete forecast snapshots rather than one smeared validity
+   period. That makes it the layer the time scrub was worth building for: move
+   the slider and the polygons step with it.
+
+   AWC publishes steps at 0, 3, 6, 9 and 12 hours. The scrub selects the step
+   at or before the chosen hour rather than the nearest one, because showing a
+   later snapshot for an earlier time would forecast backwards.
+
+   Field names are read defensively. The endpoint is already on the Worker's
+   allow list, so nothing needs redeploying; a shape surprise degrades to an
+   empty layer and a note rather than a broken map.
+   ========================================================================== */
+
+const GAIR_STEPS = [0, 3, 6, 9, 12];
+
+let gairData = null;     // raw records, held so the scrub costs no request
+
+/* Hazard labels differ between the text and graphical products. */
+const GAIR_LABEL = {
+  IFR:'IFR', MT_OBSC:'Mountain obscuration', MTN_OBSCN:'Mountain obscuration',
+  TURB:'Turbulence', 'TURB-HI':'Turbulence (high)', 'TURB-LO':'Turbulence (low)',
+  ICE:'Icing', ICING:'Icing', LLWS:'Low-level wind shear',
+  SFC_WND:'Surface wind', M_FZLVL:'Freezing level', FZLVL:'Freezing level'
+};
+const gairColor = h =>
+  HAZ_COLOR[h] ||
+  (/ICE|ICING/.test(h||'') ? HAZ_COLOR.ICE :
+   /TURB/.test(h||'')      ? HAZ_COLOR.TURB :
+   /OBSC/.test(h||'')      ? HAZ_COLOR.MTN_OBSCN :
+   /FZLVL/.test(h||'')     ? '#9fd8ff' :
+   /WND|LLWS/.test(h||'')  ? HAZ_COLOR.LLWS : '#a9c4d2');
+
+/* Which published step to draw for the scrubbed hour: the latest one that is
+   not in the future relative to it. */
+function gairStepFor(h){
+  let step = GAIR_STEPS[0];
+  for(const g of GAIR_STEPS) if(g <= h) step = g;
+  return step;
+}
+
+/* The step a record belongs to. AWC spells this several ways across formats,
+   so each is tried before falling back to deriving it from the valid time. */
+function gairRecStep(a){
+  const direct = a.forecast ?? a.fcstHr ?? a.forecastHour ?? a.fcst_hr;
+  if(direct != null && isFinite(+direct)) return +direct;
+  const t = a.validTime ?? a.validTimeFrom ?? a.issueTime;
+  if(t != null){
+    const ms = (typeof t === 'number' ? t*1000 : Date.parse(t));
+    if(isFinite(ms)){
+      const h = Math.round((ms - Date.now())/3600e3);
+      return gairStepFor(Math.max(0, h));
+    }
+  }
+  return 0;
+}
+
+function gairPoints(a){
+  const cs = a.coords || a.area || a.geometry;
+  if(Array.isArray(cs))
+    return cs.map(c => Array.isArray(c) ? [c[1], c[0]] : [c.lat, c.lon])
+             .filter(q => q[0] != null && q[1] != null && isFinite(q[0]) && isFinite(q[1]));
+  return [];
+}
+
+async function loadGairmet(){
+  let data;
+  try{ data = await awc('gairmet?format=json'); }
+  catch(e){ console.warn('g-airmet:', e.message); return; }
+  if(!Array.isArray(data)) data = data ? [data] : [];
+  gairData = data;
+  renderGairmet();
+}
+
+function renderGairmet(){
+  if(!layers.gairmet) return;
+  layers.gairmet.clearLayers();
+  if(!gairData) return;
+
+  const step = gairStepFor(scrubH);
+  const view = CONFIG.followMap ? map.getBounds().pad(0.2) : REGION;
+  let shown = 0;
+
+  for(const a of gairData){
+    if(gairRecStep(a) !== step) continue;
+    const pts = gairPoints(a);
+    if(pts.length < 3) continue;
+    const poly = L.polygon(pts);
+    if(!poly.getBounds().intersects(view)) continue;
+
+    const haz = a.hazard || a.product || '';
+    const color = gairColor(haz);
+    const lo = a.altitudeLow1 ?? a.altitudeLow ?? a.base;
+    const hi = a.altitudeHi1  ?? a.altitudeHi  ?? a.top;
+    poly.setStyle({ color, weight:1.3, opacity:.9,
+                    fillColor:color, fillOpacity:.08 });
+    poly.bindPopup(`<div class="pop">
+      <h2>${GAIR_LABEL[haz] || haz || 'G-AIRMET'}</h2>
+      <div class="sub">forecast +${step} h${
+        a.severity ? ' · severity ' + a.severity : ''}${
+        lo != null ? ' · ' + (+lo).toLocaleString() + '–' +
+          (hi != null ? (+hi).toLocaleString() : '') + ' ft' : ''}</div>
+      ${a.product ? `<div class="raw">${a.product}</div>` : ''}
+    </div>`, { maxWidth:320 });
+    poly.addTo(layers.gairmet);
+    shown++;
+  }
+
+  const n = $('#gairNote');
+  if(n){
+    n.hidden = !map.hasLayer(layers.gairmet);
+    n.textContent = shown
+      ? `G-AIRMET +${step} h · ${shown} area${shown===1?'':'s'}`
+      : `No G-AIRMET area in view at +${step} h`;
   }
 }
 
@@ -2312,6 +3001,11 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
       else  { loadTrend(); }
       return;
     }
+    if(key==='gairmet'){
+      if(on){ map.removeLayer(layers.gairmet); const n=$('#gairNote'); if(n) n.hidden=true; }
+      else  { layers.gairmet.addTo(map); gairData ? renderGairmet() : loadGairmet(); }
+      return;
+    }
     if(key==='frz'){
       if(on){ map.removeLayer(layers.frz); }
       else  { layers.frz.addTo(map); if(!layers.frz.getLayers().length) loadFrz(true); }
@@ -2323,6 +3017,87 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
     }
   };
 });
+/* ---------------------------------------------------------------------------
+   Time scrub. One offset, read by every forecast layer. Moving it issues no
+   request: the Open-Meteo responses already hold every hour, and G-AIRMET
+   carries its own forecast steps.
+
+   What it does NOT do is move the station dots. Those are observations, and
+   there is no honest way to age them forward, so at any non-zero offset they
+   are visibly stood down and the control says so in plain words. A map that
+   let its observations drift silently into the future would be worse than no
+   scrub at all.
+   ------------------------------------------------------------------------- */
+function scrubTarget(){
+  return new Date(Math.floor(Date.now()/3600e3)*3600e3 + scrubH*3600e3);
+}
+
+function paintScrubTrack(){
+  const r = $('#scrubRange');
+  if(!r) return;
+  const pct = (scrubH / Math.max(1, CONFIG.scrubMax)) * 100;
+  r.style.background = `linear-gradient(90deg,var(--accent) ${pct}%,` +
+                       `rgba(140,185,205,.3) ${pct}%)`;
+}
+
+function applyScrub(h, opts){
+  scrubH = Math.max(0, Math.min(CONFIG.scrubMax, h|0));
+  const t = scrubTarget();
+
+  const at = $('#scrubAt'), off = $('#scrubOff'), warn = $('#scrubWarn'),
+        box = $('#scrub'), rng = $('#scrubRange');
+  if(rng && +rng.value !== scrubH) rng.value = String(scrubH);
+  paintScrubTrack();
+  if(at)  at.textContent = scrubH === 0 ? 'now'
+            : pad(t.getHours()) + ':00 ' + ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][t.getDay()];
+  if(off) off.textContent = scrubH === 0 ? 'current' : '+' + scrubH + ' h';
+  if(box) box.classList.toggle('off', scrubH !== 0);
+  document.body.classList.toggle('scrubbed', scrubH !== 0);
+  if(warn){
+    warn.hidden = scrubH === 0;
+    warn.textContent = 'Forecast layers at +' + scrubH + ' h. Station reports, '
+      + 'trend and the flight-category dots are current observations and have '
+      + 'not moved.';
+  }
+
+  // Every forecast layer re-reads the hour it already holds.
+  renderFrz();
+  for(const k of ['wind3k','wind10k']) if(windData[k]) renderWinds(k);
+  renderGairmet();
+  renderRouteProfile();
+  renderHome();                         // the TAF strip marks the scrubbed hour
+  if(opts && opts.rerenderStations) renderStations();
+}
+
+(function wireRoute(){
+  const chip = $('#routeChip'), panel = $('#route'),
+        inp = $('#routeIn'), go = $('#routeGo'), clr = $('#routeClear');
+  if(!chip || !panel) return;
+  chip.onclick = () => {
+    const on = chip.getAttribute('aria-pressed') === 'true';
+    chip.setAttribute('aria-pressed', String(!on));
+    panel.hidden = on;
+    document.body.classList.toggle('routeopen', !on);
+    if(on){ clearRoute(); }
+    else if(inp){ inp.focus(); }
+    // The dock changed width, so Leaflet needs to re-measure its container.
+    setTimeout(() => map.invalidateSize(), 60);
+  };
+  if(go)  go.onclick = () => setRoute(inp ? inp.value : '');
+  if(clr) clr.onclick = () => { if(inp) inp.value = ''; clearRoute(); };
+  if(inp) inp.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); setRoute(inp.value); } };
+})();
+
+(function wireScrub(){
+  const rng = $('#scrubRange'), now = $('#scrubNow');
+  if(rng){
+    rng.max = String(CONFIG.scrubMax);
+    rng.oninput = () => applyScrub(+rng.value);
+  }
+  if(now) now.onclick = () => applyScrub(0);
+  applyScrub(0);
+})();
+
 /* ---------------------------------------------------------------------------
    Base-map picker. Options are generated from the BASEMAPS catalogue, so
    adding a base to that table is the only step needed to offer it here.
@@ -2393,6 +3168,8 @@ map.on('moveend', ()=>{
   panTimer = setTimeout(()=>loadMetars(), 700);   // debounce: one fetch per pause
 });
 map.on('zoomend', renderStations);                // re-thin for the new scale
+// Hazard polygons are clipped to the view, so a pan re-clips without refetching.
+map.on('moveend', () => { if(map.hasLayer(layers.gairmet)) renderGairmet(); });
 
 /* loadMetars already refreshes the overlays that follow the station data, so
    this only forces that pass and busts the radar tile cache, which nothing
@@ -2438,6 +3215,12 @@ function readArgs(){
   CONFIG.showTrend   = argBool(q.get('trend'),    CONFIG.showTrend);
   const th = parseInt(q.get('tafhours'), 10);
   if(th >= 3 && th <= 24) CONFIG.tafHours = th;
+
+  const sh = parseInt(q.get('hours'), 10);
+  if(sh >= 0 && sh <= CONFIG.scrubMax) CONFIG.scrubOpen = sh;
+
+  // Held rather than acted on: the route needs stations resolved first.
+  CONFIG.routeOpen = String(q.get('route') || '').trim();
 
   const b = String(q.get('base')||'').trim().toLowerCase();
   if(b && BASEMAPS[b]) CONFIG.basemap = b;
@@ -2520,8 +3303,19 @@ async function boot(){
   } else {
     applyHome(CONFIG.home);
   }
-  loadMetars(true);
+  await loadMetars(true);
   loadFrz();        // freezing level at the home field, overlay or not
+
+  // ?route= needs stations in hand before the corridor can be selected, and
+  // ?hours= is applied after so the scrub reads layers that already exist.
+  if(CONFIG.routeOpen){
+    const chip = $('#routeChip');
+    if(chip && chip.getAttribute('aria-pressed') !== 'true') chip.onclick();
+    const inp = $('#routeIn');
+    if(inp) inp.value = CONFIG.routeOpen;
+    await setRoute(CONFIG.routeOpen);
+  }
+  if(CONFIG.scrubOpen) applyScrub(CONFIG.scrubOpen);
 }
 
 boot();
