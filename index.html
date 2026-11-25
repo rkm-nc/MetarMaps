@@ -78,6 +78,22 @@
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
+     ?trend=0       Each station carries an arrow when its condition has moved
+                    inside the look-back window. A filled arrow means the
+                    flight category itself changed; an outlined one means the
+                    category held but ceiling or visibility moved materially.
+                    No arrow means no meaningful change. Costs one extra
+                    request, and is skipped at wide view, where the 400-entry
+                    cap makes it meaningless.
+                    Default: on.
+
+     ?tafhours=12   Width of the forecast strip, in hours. Range 3 to 24. The
+                    strip body is the governing forecast (the initial group,
+                    FM and BECMG); the thin stripe above it is TEMPO or PROB,
+                    which is a stated risk inside the period rather than a
+                    forecast of it.
+                    Default: 12.
+
      ?terrain=0     Shaded relief under the map. Terrain is part of the
                     go/no-go at most fields in the southern Appalachians, so
                     this is on unless you turn it off.
@@ -95,6 +111,8 @@
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?apt=KAVL&tafhours=24   Asheville, full day of forecast
+     /MetarMaps/?trend=0                no trend arrows, one request fewer
      /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
@@ -126,6 +144,14 @@
                  table further down; add an entry there to offer another.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
+     showTrend   Default for ?trend=, with trendHours the look-back window and
+     trendHours    trendMovePct the within-category move worth an outlined
+     trendMovePct  arrow.
+     tafHours    Default for ?tafhours=. tafSearch is how many fields outward
+     tafSearch     from home to try before giving up on finding one with a TAF.
+     lowCloudTopFt  The icing inputs. See the freezing-level section.
+     cloudThreshold
+     frzHours
      markerScale Global size multiplier for the station glyphs, with
      markerGrowth  markerGrowth controlling how fast they grow with zoom and
      markerMin     markerMin/markerMax bounding the result.
@@ -151,13 +177,17 @@
    ----------------------------------------------------------------------------
    DATA
    ----------------------------------------------------------------------------
-     METAR, AIRMET/SIGMET  NOAA / Aviation Weather Center   needs the proxy
+     METAR, TAF            NOAA / Aviation Weather Center   needs the proxy
+     AIRMET / SIGMET       NOAA / Aviation Weather Center   needs the proxy
      Winds aloft           Open-Meteo pressure levels       cross-origin open
+     Freezing level, cloud Open-Meteo                       cross-origin open
      Radar                 NOAA NEXRAD via Iowa State       tiles, no key
      Terrain, base, labels Esri / USGS                      tiles, no key
 
-   Raw METAR text is parsed here rather than trusting decoded fields, so the
-   same code path serves any feed that returns a raw report.
+   Raw METAR and TAF text are parsed here rather than trusting decoded fields,
+   so the same code path serves any feed that returns a raw report. Both go
+   through one token scanner, parseConditions, because a forecast group and an
+   observation body carry the same tokens.
    ========================================================================== */
 
 <!DOCTYPE html>
@@ -214,8 +244,12 @@
   #home .grid div{display:flex;justify-content:space-between;gap:8px;
     border-bottom:1px dotted rgba(140,185,205,.16);padding:2px 0}
   #home .grid b{font-weight:600;font-variant-numeric:tabular-nums}
+  #home .icing{margin-top:8px;padding:5px 7px;border-radius:3px;font-size:11px;
+    border:1px solid rgba(255,194,77,.45);background:rgba(255,194,77,.09);color:#ffd387}
+  #home .icing.sfc{border-color:rgba(255,143,122,.5);background:rgba(255,143,122,.1);color:#ffb4a8}
   #home .raw{margin-top:9px;font:11px/1.45 var(--mono);color:var(--ink-dim);word-break:break-word}
-  #home.collapsed .grid,#home.collapsed .raw,#home.collapsed .cat{display:none}
+  #home.collapsed .grid,#home.collapsed .raw,#home.collapsed .cat,
+  #home.collapsed .icing,#home.collapsed #hTaf{display:none}
   #homeToggle{position:absolute;top:8px;right:8px;background:none;border:0;color:var(--ink-faint);
     cursor:pointer;font:600 15px/1 var(--sans);padding:2px 5px}
   #homeToggle:hover{color:var(--ink)}
@@ -232,12 +266,13 @@
   #obsHead button:hover{color:var(--ink)}
   #obsList{overflow:auto;flex:1}
   #obs.collapsed #obsList{display:none}
-  .row{display:grid;grid-template-columns:14px 52px 1fr auto;gap:8px;align-items:center;
+  .row{display:grid;grid-template-columns:14px 60px 1fr auto;gap:8px;align-items:center;
     padding:6px 11px;border-bottom:1px solid rgba(140,185,205,.1);cursor:pointer;font-size:12px}
   .row:hover{background:rgba(89,212,232,.09)}
   .row:last-child{border-bottom:0}
   .dot{width:9px;height:9px;border-radius:50%;justify-self:center}
   .row .id{font:600 12px/1 var(--mono);letter-spacing:.02em}
+  .row .tr{padding-left:3px;font-size:11px}
   .row .det{color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .row .brg{color:var(--ink-faint);font-variant-numeric:tabular-nums;font-size:11px}
   .row.stale .id,.row.stale .det{color:var(--ink-faint)}
@@ -268,12 +303,21 @@
     border-radius:4px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
   .leaflet-popup-tip{background:#0d2632;border:1px solid var(--line)}
   .leaflet-popup-content{margin:11px 13px;font-size:12px;min-width:216px}
+  .leaflet-popup-content:has(svg.tafstrip){min-width:290px}
   .pop h2{margin:0 0 2px;font-size:13px;font-weight:600}
   .pop .sub{color:var(--ink-faint);font-size:11px;margin-bottom:7px}
   .pop table{width:100%;border-collapse:collapse;font-size:12px}
   .pop td{padding:2px 0;border-bottom:1px dotted rgba(140,185,205,.16)}
   .pop td:last-child{text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
   .pop .raw{margin-top:7px;font:11px/1.45 var(--mono);color:var(--ink-dim);word-break:break-word}
+  .pop .tafhd,#home .tafhd{display:flex;align-items:baseline;gap:6px;
+    margin:9px 0 2px;font-size:11px;color:var(--ink-dim)}
+  .pop .tafhd b,#home .tafhd b{color:var(--ink);font-weight:600;font-size:11px}
+  .pop .tafhd .at,#home .tafhd .at{margin-left:auto;color:var(--ink-faint)}
+  svg.tafstrip{display:block;overflow:visible}
+  svg.tafstrip .tk{font:9px/1 var(--mono);fill:var(--ink-faint)}
+  .tafnote{font-size:10.5px;color:var(--ink-faint);margin-top:2px}
+  .tafnone{font-size:11px;color:var(--ink-faint);margin-top:8px}
   .leaflet-popup-close-button{color:var(--ink-faint)!important}
 
   .windpt{background:none;border:0}
@@ -283,6 +327,15 @@
   body.lightbase .windpt text{fill:#14425a}
 
   .sig{font:600 10px/1 var(--sans)}
+
+  .frzpt{background:none;border:0}
+  .frzpt svg{overflow:visible}
+  .frzpt text{font:600 10px/1 var(--mono);paint-order:stroke;
+    stroke:var(--halo);stroke-width:2.6px;stroke-linejoin:round}
+  .frzpt .lvl{fill:#9fe8c0}            /* no cloud in the band */
+  .frzpt .warn{fill:#ffc24d}           /* cloud sitting in the band */
+  .frzpt .sfc{fill:#ff8f7a}            /* freezing level at or near the surface */
+  .frzpt .cap{font-size:8.5px;fill:#8fa9b6}
   @media (max-width:620px){
     #home{left:10px;top:auto;bottom:10px;width:calc(100vw - 20px)}
     #obs{display:none}
@@ -317,7 +370,10 @@
     <div><span>Alt</span><b id="hAlt">–</b></div>
     <div><span>T / Td</span><b id="hTemp">–</b></div>
     <div><span>Dens alt</span><b id="hDa">–</b></div>
+    <div><span>Frz lvl</span><b id="hFrz">–</b></div>
   </div>
+  <div class="icing" id="hIcing" hidden></div>
+  <div id="hTaf"></div>
   <div class="raw" id="hRaw"></div>
 </section>
 
@@ -330,6 +386,8 @@
   <button class="chip" data-layer="wind3k" aria-pressed="false">3K wind</button>
   <button class="chip" data-layer="wind10k" aria-pressed="false">10K wind</button>
   <button class="chip" data-layer="barbs" aria-pressed="true">APT wind</button>
+  <button class="chip" data-layer="frz" aria-pressed="false">Freezing level</button>
+  <button class="chip" data-layer="trend" aria-pressed="true">Trend</button>
   <button class="chip" data-layer="airsig" aria-pressed="false">AIRMET / SIGMET</button>
   <div class="rail-gap"></div>
   <button class="chip" id="refresh">Refresh</button>
@@ -436,6 +494,22 @@
      ?radar=1       NEXRAD base reflectivity, on at load.
                     Default: off.
 
+     ?trend=0       Each station carries an arrow when its condition has moved
+                    inside the look-back window. A filled arrow means the
+                    flight category itself changed; an outlined one means the
+                    category held but ceiling or visibility moved materially.
+                    No arrow means no meaningful change. Costs one extra
+                    request, and is skipped at wide view, where the 400-entry
+                    cap makes it meaningless.
+                    Default: on.
+
+     ?tafhours=12   Width of the forecast strip, in hours. Range 3 to 24. The
+                    strip body is the governing forecast (the initial group,
+                    FM and BECMG); the thin stripe above it is TEMPO or PROB,
+                    which is a stated risk inside the period rather than a
+                    forecast of it.
+                    Default: 12.
+
      ?terrain=0     Shaded relief under the map. Terrain is part of the
                     go/no-go at most fields in the southern Appalachians, so
                     this is on unless you turn it off.
@@ -453,6 +527,8 @@
      /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
      /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
      /MetarMaps/?base=relief            K1A5 on USGS shaded relief
+     /MetarMaps/?apt=KAVL&tafhours=24   Asheville, full day of forecast
+     /MetarMaps/?trend=0                no trend arrows, one request fewer
      /MetarMaps/?national=0             centre-only coverage when zoomed out
      /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
      /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
@@ -484,6 +560,14 @@
                  table further down; add an entry there to offer another.
      showRadar   Default for ?radar=.
      showTerrain Default for ?terrain=.
+     showTrend   Default for ?trend=, with trendHours the look-back window and
+     trendHours    trendMovePct the within-category move worth an outlined
+     trendMovePct  arrow.
+     tafHours    Default for ?tafhours=. tafSearch is how many fields outward
+     tafSearch     from home to try before giving up on finding one with a TAF.
+     lowCloudTopFt  The icing inputs. See the freezing-level section.
+     cloudThreshold
+     frzHours
      markerScale Global size multiplier for the station glyphs, with
      markerGrowth  markerGrowth controlling how fast they grow with zoom and
      markerMin     markerMin/markerMax bounding the result.
@@ -509,13 +593,17 @@
    ----------------------------------------------------------------------------
    DATA
    ----------------------------------------------------------------------------
-     METAR, AIRMET/SIGMET  NOAA / Aviation Weather Center   needs the proxy
+     METAR, TAF            NOAA / Aviation Weather Center   needs the proxy
+     AIRMET / SIGMET       NOAA / Aviation Weather Center   needs the proxy
      Winds aloft           Open-Meteo pressure levels       cross-origin open
+     Freezing level, cloud Open-Meteo                       cross-origin open
      Radar                 NOAA NEXRAD via Iowa State       tiles, no key
      Terrain, base, labels Esri / USGS                      tiles, no key
 
-   Raw METAR text is parsed here rather than trusting decoded fields, so the
-   same code path serves any feed that returns a raw report.
+   Raw METAR and TAF text are parsed here rather than trusting decoded fields,
+   so the same code path serves any feed that returns a raw report. Both go
+   through one token scanner, parseConditions, because a forecast group and an
+   observation body carry the same tokens.
    ========================================================================== */
 
 const CONFIG = {
@@ -536,7 +624,7 @@ const CONFIG = {
   // your own relay (see worker.js), e.g.
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
-  
+
  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
@@ -565,6 +653,33 @@ const CONFIG = {
   // Background map. Default for ?base=. See the BASEMAPS catalogue below for
   // the full set. What governs legibility is saturation, not lightness.
   basemap: 'dark',
+
+  // Icing. The band where airframe ice forms is cloud between 0 C and about
+  // -20 C, so the two numbers that matter are the altitude of the freezing
+  // level and whether there is cloud sitting at or above it. Both are shown
+  // as themselves rather than combined into an invented risk index: the
+  // forecast supports the two inputs, not a synthesized score.
+  // Open-Meteo's cloud_cover_low covers the surface to 3 km, which in feet is
+  // the figure below and, over these mountains, is where a piston twin lives.
+  lowCloudTopFt: 9840,
+  cloudThreshold: 40,        // percent cover treated as a meaningful deck
+  frzHours: 0,               // hour offset into the forecast; 0 is now
+
+  // Trend. A field at MVFR and deteriorating is a different decision from one
+  // at MVFR and improving, and a current observation cannot tell you which.
+  // AWC holds the previous 30 days, so one extra request with a look-back
+  // window answers it. Note that the 400-entry cap counts observations rather
+  // than stations, so a 3-hour window returns roughly a third as many fields:
+  // trend is therefore skipped at wide view, where it would be meaningless.
+  showTrend:  true,          // default for ?trend=
+  trendHours: 3,
+  trendMovePct: 30,          // within-category move worth a soft arrow
+
+  // TAF. Fetched one field at a time when a popup opens, rather than for every
+  // station on screen: most small fields issue no TAF at all, and spending the
+  // request budget to discover that is waste.
+  tafHours:  12,             // width of the timeline strip
+  tafSearch: 6,              // fields to try outward from home for its own TAF
 
   // Opening state of the two optional map layers. Defaults for ?radar= and
   // ?terrain=. Either can still be toggled from the chip rail at any time.
@@ -615,24 +730,14 @@ const WX_RE = /^(-|\+|VC)?(MI|PR|BC|DR|BL|SH|TS|FZ)?((?:DZ|RA|SN|SG|IC|PL|GR|GS|
 const CLD_RE = /^(SKC|CLR|NSC|NCD|FEW|SCT|BKN|OVC|VV)(\d{3}|\/{3})?(CB|TCU)?$/;
 const isWx = tok => { const m = tok.match(WX_RE); return !!(m && tok.length>1 && (m[2]||m[3])); };
 
-function parseMetar(raw){
-  if(!raw) return null;
-  const o = { raw:raw.trim(), wx:[], clouds:[], vis:null, wdir:null, wspd:null, wgst:null,
-              temp:null, dewp:null, altim:null, ceiling:null, auto:false, obsTime:null };
-  const t = o.raw.replace(/^(METAR|SPECI)\s+/,'').split(/\s+/);
-  let i = 0;
-  o.id = t[i++];
-
-  if(/^\d{6}Z$/.test(t[i])){
-    const s=t[i++], day=+s.slice(0,2), hh=+s.slice(2,4), mm=+s.slice(4,6);
-    const now=new Date(), d=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),day,hh,mm));
-    if(d-now > 6*3600e3) d.setUTCMonth(d.getUTCMonth()-1);
-    o.obsTime = d;
-  }
-  while(i<t.length && /^(AUTO|COR|NIL|RTD)$/.test(t[i])){ if(t[i]==='AUTO') o.auto=true; i++; }
-
+/* Wind, visibility and everything up to RMK. Shared by the METAR parser and
+   the TAF parser: a TAF forecast group uses the same tokens as an observation
+   body, minus temperature, dewpoint and altimeter, so one scanner serves both
+   rather than two that drift apart. Returns the index it stopped at. */
+function parseConditions(t, i, o){
+  let m;
   // wind
-  let m = t[i] && t[i].match(/^(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS|KMH)$/);
+  m = t[i] && t[i].match(/^(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS|KMH)$/);
   if(m){
     const k = m[4]==='MPS' ? 1.94384 : m[4]==='KMH' ? 0.539957 : 1;
     o.wdir = m[1]==='VRB' ? 'VRB' : +m[1];
@@ -641,8 +746,10 @@ function parseMetar(raw){
     i++;
     if(t[i] && /^\d{3}V\d{3}$/.test(t[i])){ o.wvar = t[i]; i++; }
   }
-  // visibility
+  // visibility. P6SM is "greater than 6", which is unrestricted for category
+  // purposes; it is recorded as 10 with visMore set so the display can say so.
   if(t[i]==='CAVOK'){ o.vis=10; o.cavok=true; i++; }
+  else if(t[i]==='P6SM'){ o.vis=10; o.visMore=true; i++; }
   else{
     if(/^\d$/.test(t[i]) && /^\d\/\d+SM$/.test(t[i+1]||'')){
       const f=t[i+1].replace('SM','').split('/');
@@ -660,6 +767,8 @@ function parseMetar(raw){
     const tok = t[i];
     if(tok === 'RMK') break;
     if(/^R\d{2}[LCR]?\//.test(tok)) continue;          // RVR
+    if(/^WS\d{3}\//.test(tok)){ o.shear = tok; continue; }   // TAF wind shear
+    if(tok === 'NSW'){ o.nsw = true; continue; }
     if(isWx(tok)){
       const w = tok.match(WX_RE);
       o.wx.push({ code:tok, inten:w[1]||'', desc:w[2]||'', phen:w[3]||'' });
@@ -672,13 +781,60 @@ function parseMetar(raw){
       continue;
     }
     if((m = tok.match(/^(M?\d{2})\/(M?\d{2})?$/))){
-      const num = s => s==null ? null : (s[0]==='M' ? -+s.slice(1) : +s);
+      const num = x => x==null ? null : (x[0]==='M' ? -+x.slice(1) : +x);
       o.temp = num(m[1]); o.dewp = num(m[2]);
       continue;
     }
     if((m = tok.match(/^A(\d{4})$/)))      { o.altim = +m[1]/100;    continue; }
     if((m = tok.match(/^Q(\d{4})$/)))      { o.altim = +m[1]*0.02953; continue; }
   }
+  return i;
+}
+
+/* A day-of-month plus hour, resolved against now. TAF and METAR both give
+   times this way and leave the month implied, so a report issued late on the
+   31st and read early on the 1st has to resolve backward rather than forward.
+
+   Two traps here, both of which produce a silently wrong date rather than an
+   error. Date.UTC normalizes an impossible day — the 31st of a 30-day month
+   becomes the 1st of the next — so each candidate month is checked to confirm
+   the requested day actually exists in it. And TAFs write midnight at the end
+   of a period as hour 24, so the hour is added to midnight of the named day
+   instead of being passed to Date.UTC, where it would roll the date over and
+   fail that same check. The nearest surviving candidate wins. */
+function resolveDayHour(day, hh, mm, ref){
+  const now = ref || new Date();
+  const H = hh || 0, M = mm || 0;
+  const build = off => {
+    const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + off, day));
+    if(base.getUTCDate() !== day) return null;        // no such day that month
+    return new Date(base.getTime() + H*3600e3 + M*60e3);
+  };
+  let best = null;
+  for(const off of [-1, 0, 1]){
+    const d = build(off);
+    if(d && (!best || Math.abs(d - now) < Math.abs(best - now))) best = d;
+  }
+  if(best) return best;
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), day));
+  return new Date(base.getTime() + H*3600e3 + M*60e3);
+}
+
+function parseMetar(raw){
+  if(!raw) return null;
+  const o = { raw:raw.trim(), wx:[], clouds:[], vis:null, wdir:null, wspd:null, wgst:null,
+              temp:null, dewp:null, altim:null, ceiling:null, auto:false, obsTime:null };
+  const t = o.raw.replace(/^(METAR|SPECI)\s+/,'').split(/\s+/);
+  let i = 0;
+  o.id = t[i++];
+
+  if(/^\d{6}Z$/.test(t[i])){
+    const z = t[i++];
+    o.obsTime = resolveDayHour(+z.slice(0,2), +z.slice(2,4), +z.slice(4,6));
+  }
+  while(i<t.length && /^(AUTO|COR|NIL|RTD)$/.test(t[i])){ if(t[i]==='AUTO') o.auto=true; i++; }
+
+  i = parseConditions(t, i, o);
 
   const rmk = o.raw.indexOf(' RMK');
   o.remarks = rmk>-1 ? o.raw.slice(rmk+5) : '';
@@ -839,6 +995,16 @@ OPTIONS
   radar=<0|1>      NEXRAD base reflectivity at load.
                    default: off
 
+  trend=<0|1>      Arrows marking stations whose condition has moved over the
+                   last 3 hours. Filled: the flight category changed. Outlined:
+                   the category held but ceiling or visibility moved by 30% or
+                   more. No arrow: no meaningful change. Costs one extra
+                   request and is skipped when zoomed out past 14 degrees.
+                   default: on
+
+  tafhours=<n>     Width of the forecast strip, in hours. Range 3 to 24.
+                   default: 12
+
   national=<0|1>   At views wider than 14 degrees, add a backbone of major
                    reporting fields spread across the country, so the whole
                    map is populated at low density rather than a dense patch
@@ -864,6 +1030,24 @@ EXAMPLES
   ?apt=KTYS&span=3&zoom=8              Knoxville, wider opening view
   ?apt=K1A5&base=relief&radar=1        home field on shaded relief, radar up
   ?apt=KGSP&follow=0&national=0        fixed box, centre-only coverage
+  ?apt=KAVL&tafhours=24                a full day of forecast
+  ?trend=0                             no arrows, one request fewer
+
+WHAT THE READOUTS MEAN
+  Frz lvl    Altitude of the 0 C level, shown MSL and above the field. The
+             AGL figure is the one that decides whether there is ice-free air
+             to climb through. An amber note appears when there is cloud
+             sitting in the icing band; a red one when the freezing level is
+             at field level, which is the freezing-precipitation case. The two
+             inputs are shown as themselves: no icing index is computed, as
+             the forecast does not support one.
+  Trend      Filled arrow, the flight category changed. Outlined arrow, the
+             category held but ceiling or visibility moved materially. The
+             popup carries the earlier figures so the move is auditable.
+  Forecast   Strip body is the governing forecast. The thin stripe above it is
+             TEMPO or PROB: a stated risk inside the period, not a forecast of
+             it. Most small fields issue no TAF, so the home card shows the
+             nearest field that does and names it.
 
 BEHAVIOUR WORTH KNOWING
   An identifier that resolves to nothing leaves the map on the default field
@@ -875,8 +1059,8 @@ BEHAVIOUR WORTH KNOWING
   screen cell. Thinning may hide good news. It never hides weather.
 
 DATA
-  METAR, AIRMET/SIGMET   NOAA / Aviation Weather Center
-  Winds aloft            Open-Meteo pressure levels
+  METAR, TAF, AIRMET     NOAA / Aviation Weather Center
+  Winds, freezing level  Open-Meteo
   Radar                  NOAA NEXRAD via Iowa State Mesonet
   Terrain, base, labels  Esri, USGS, OpenStreetMap
 `;
@@ -1006,6 +1190,7 @@ const layers = {
   stations : L.layerGroup().addTo(map),
   wind3k   : L.layerGroup(),
   wind10k  : L.layerGroup(),
+  frz      : L.layerGroup(),
   airsig   : L.layerGroup()
 };
 let showBarbs = true;
@@ -1174,6 +1359,7 @@ function stationIcon(st, isHome){
       <circle cx="0" cy="0" r="5.4" fill="${color}" stroke="${HALO}" stroke-width="1.2"/>
       ${wxGlyph(p,color)}
       <text class="lbl" x="9" y="4">${st.id.replace(/^K/,'')}</text>
+      ${trendArrowSVG(st.trend)}
       <circle class="hit" cx="0" cy="0" r="13" fill="transparent"/>
     </g></svg>`;
   return L.divIcon({ className:'stn'+(isHome?' home':''), html,
@@ -1193,11 +1379,19 @@ function popupHTML(st){
     ['Altimeter', p&&p.altim!=null ? p.altim.toFixed(2)+'"' : '—'],
     ['Observed', ageText(p&&p.obsTime)]
   ];
+  if(st.trend && st.then){
+    const w = trendWords(st.trend);
+    rows.splice(1, 0, ['Trend',
+      `<span style="color:${TREND_COLOR[st.trend.dir]}">${w}</span>`]);
+    rows.push([`${Math.round((p.obsTime - st.then.obsTime)/60000/60*10)/10} h ago`,
+      `${category(st.then)} · ${ceilText(st.then)} · ${visText(st.then.vis, st.then.visLess)}`]);
+  }
   return `<div class="pop"><h2>${st.id} · ${st.name||''}</h2>
     <div class="sub">${st.dist!=null? st.dist.toFixed(0)+' nm '+compass(st.brg)+' of K1A5 · ':''}
       ${st.elev!=null? Math.round(st.elev)+' ft':''}</div>
     <table>${rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
-    <div class="raw">${p?p.raw:'No current observation.'}</div></div>`;
+    <div class="raw">${p?p.raw:'No current observation.'}</div>
+    <div class="tafslot" data-id="${st.id}">${tafBlock(st.id)}</div></div>`;
 }
 
 function renderStations(){
@@ -1248,9 +1442,13 @@ function renderList(list, shownCount){
     const p = st.parsed;
     const det = st.cat==='NONE' ? 'no current observation'
       : `${windText(p)} · ${visText(p&&p.vis, p&&p.visLess)} · ${ceilText(p)}`;
+    const tArrow = st.trend
+      ? `<span class="tr" style="color:${TREND_COLOR[st.trend.dir]};
+           opacity:${st.trend.firm ? 1 : .6}">${st.trend.dir==='down'?'▾':'▴'}</span>`
+      : '';
     return `<div class="row${st.cat==='NONE'?' stale':''}" data-id="${st.id}">
       <span class="dot" style="background:${CAT_COLOR[st.cat]}"></span>
-      <span class="id">${st.id}</span>
+      <span class="id">${st.id}${tArrow}</span>
       <span class="det">${det}</span>
       <span class="brg">${st.dist==null?'':st.dist.toFixed(0)+' '+compass(st.brg)}</span>
     </div>`;
@@ -1272,7 +1470,11 @@ function renderHome(){
   const cat = st ? st.cat : 'NONE';
   $('#hCat').textContent = cat==='NONE' ? '—' : cat;
   $('#hCat').style.color = CAT_COLOR[cat];
-  $('#hAge').textContent = p ? ageText(p.obsTime) : 'no current observation';
+  const hTrend = st && st.trend ? trendWords(st.trend) : null;
+  $('#hAge').innerHTML = p
+    ? ageText(p.obsTime) + (hTrend
+        ? ` · <span style="color:${TREND_COLOR[st.trend.dir]}">${hTrend}</span>` : '')
+    : 'no current observation';
   $('#hWind').textContent = windText(p);
   $('#hVis').textContent  = visText(p&&p.vis, p&&p.visLess);
   $('#hCeil').textContent = ceilText(p);
@@ -1281,7 +1483,45 @@ function renderHome(){
   const da = (p && CONFIG.home.elev != null)
     ? densityAlt(CONFIG.home.elev, p.temp, p.altim) : null;
   $('#hDa').textContent = da==null ? '—' : da.toLocaleString()+' ft';
+
+  // Freezing level, shown MSL and above the field. The AGL figure is the one
+  // that decides whether there is any ice-free air to climb through.
+  const fz = frzHome;
+  const fEl = $('#hFrz'), nEl = $('#hIcing');
+  if(!fz || fz.frzFt == null){
+    fEl.textContent = '—';
+    nEl.hidden = true;
+  }else{
+    const agl = CONFIG.home.elev == null ? null
+      : Math.round(fz.frzFt - CONFIG.home.elev);
+    fEl.textContent = fz.frzFt.toLocaleString() + (agl == null ? '' :
+      ' / ' + (agl < 0 ? 'below fld' : agl.toLocaleString() + ' agl'));
+    if(fz.cls === 'clear'){
+      nEl.hidden = true;
+    }else{
+      const deck = Math.max(fz.low||0, fz.mid||0);
+      nEl.hidden = false;
+      nEl.className = 'icing' + (fz.cls === 'sfc' ? ' sfc' : '');
+      nEl.textContent = fz.cls === 'sfc'
+        ? `Freezing level at field level with ${Math.round(deck)}% cloud. Ground ice and freezing precipitation are the exposure here.`
+        : `${Math.round(deck)}% cloud with the freezing level at ${fz.frzFt.toLocaleString()} ft. Cloud in the icing band.`;
+    }
+  }
   $('#hRaw').textContent = p ? p.raw : '';
+
+  // The home field usually issues no TAF of its own, so the card shows the
+  // nearest one that does and says plainly whose it is.
+  const tEl = $('#hTaf');
+  if(homeTafId){
+    const borrowed = homeTafId !== CONFIG.home.id;
+    const near = stations.get(homeTafId);
+    tEl.innerHTML = tafBlock(homeTafId, 236)
+      + (borrowed ? `<div class="tafnote">${homeTafId}${
+          near && near.dist != null ? ', ' + near.dist.toFixed(0) + ' nm '
+            + compass(near.brg) : ''}. ${CONFIG.home.id} issues no TAF.</div>` : '');
+  }else{
+    tEl.innerHTML = '';
+  }
 }
 
 let inflight = false;
@@ -1353,7 +1593,10 @@ async function loadMetars(force){
   inflight    = false;
   renderStations();
   for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
-  if(map.hasLayer(layers.airsig)) loadAirSig();
+  loadFrz();                       // the card needs this whether the overlay is on
+  loadTrend();                     // fails soft; a station simply gets no arrow
+  findHomeTaf().then(r => { if(r) renderHome(); });
+  if(map.hasLayer(layers.airsig))  loadAirSig();
 
   const t = new Date();
   const note = wide
@@ -1417,6 +1660,422 @@ async function loadWinds(key){
 }
 
 /* ============================================================================
+   TAF
+   ----------------------------------------------------------------------------
+   Raw text is parsed here rather than trusting AWC's decoded fields, for the
+   same reason the METAR parser does: one scanner, any feed that returns a raw
+   report. parseConditions does the token work, so a forecast group and an
+   observation body are read by the same code.
+
+   The distinction that matters is governing versus conditional:
+
+     governing    the initial group, FM, and BECMG. These form an unbroken
+                  timeline; each runs until the next one starts.
+     conditional  TEMPO and PROB. These are overlays, not forecasts. A TEMPO
+                  IFR is not a forecast of IFR, and drawing it as one would
+                  misrepresent the product.
+
+   So the strip carries the governing timeline as its body and marks the
+   conditional risk as a separate stripe above it. BECMG is applied from the
+   START of its window, which is the conservative reading: the change may
+   begin at any point inside it.
+   ========================================================================== */
+
+function parseTaf(raw){
+  if(!raw) return null;
+  const o = { raw:raw.trim().replace(/\s+/g,' '), groups:[], id:null,
+              issued:null, from:null, to:null };
+  const t = o.raw.split(' ');
+  let i = 0;
+  if(/^TAF$/.test(t[i])) i++;
+  while(/^(AMD|COR|RTD)$/.test(t[i]||'')){ o.amended = true; i++; }
+  if(/^[A-Z0-9]{4}$/.test(t[i]||'')) o.id = t[i++];
+
+  let m;
+  if((m = (t[i]||'').match(/^(\d{2})(\d{2})(\d{2})Z$/))){
+    o.issued = resolveDayHour(+m[1], +m[2], +m[3]); i++;
+  }
+  if((m = (t[i]||'').match(/^(\d{2})(\d{2})\/(\d{2})(\d{2})$/))){
+    o.from = resolveDayHour(+m[1], +m[2], 0, o.issued);
+    o.to   = resolveDayHour(+m[3], +m[4], 0, o.issued);
+    if(o.to <= o.from) o.to = new Date(o.to.getTime() + 24*3600e3);
+    i++;
+  }
+  if(/^(NIL|CNL)$/.test(t[i]||'')){ o.nil = true; return o; }
+
+  // Split the remainder into groups at each change indicator.
+  const starts = [];
+  for(let k = i; k < t.length; k++){
+    if(/^FM\d{4,6}$/.test(t[k]) || t[k] === 'BECMG' ||
+       t[k] === 'TEMPO' || /^PROB\d{2}$/.test(t[k])) starts.push(k);
+  }
+  const bounds = [i, ...starts, t.length];
+  for(let b = 0; b < bounds.length - 1; b++){
+    const seg = t.slice(bounds[b], bounds[b+1]);
+    if(!seg.length) continue;
+    const g = parseTafGroup(seg, o);
+    if(g) o.groups.push(g);
+  }
+  // Governing groups run until the next governing group starts.
+  const gov = o.groups.filter(g => !g.conditional).sort((a,b) => a.start - b.start);
+  gov.forEach((g, n) => {
+    g.end = n + 1 < gov.length ? gov[n+1].start : (o.to || null);
+  });
+  return o;
+}
+
+function parseTafGroup(seg, taf){
+  const g = { wx:[], clouds:[], vis:null, wdir:null, wspd:null, wgst:null,
+              ceiling:null, conditional:false, kind:'INIT', prob:null,
+              start:null, end:null, text:seg.join(' ') };
+  let i = 0, m;
+  while(i < seg.length){
+    const tok = seg[i];
+    if((m = tok.match(/^PROB(\d{2})$/))){
+      g.prob = +m[1]; g.conditional = true; g.kind = 'PROB'; i++; continue;
+    }
+    if(tok === 'TEMPO'){
+      g.conditional = true; g.kind = g.prob ? 'PROB' : 'TEMPO'; i++; continue;
+    }
+    if(tok === 'BECMG'){ g.kind = 'BECMG'; i++; continue; }
+    if((m = tok.match(/^FM(\d{2})(\d{2})(\d{2})?$/))){
+      g.kind = 'FM';
+      g.start = resolveDayHour(+m[1], +m[2], m[3] ? +m[3] : 0, taf.issued);
+      i++; continue;
+    }
+    // A period range belongs to BECMG, TEMPO and PROB.
+    if((m = tok.match(/^(\d{2})(\d{2})\/(\d{2})(\d{2})$/))){
+      g.start = resolveDayHour(+m[1], +m[2], 0, taf.issued);
+      g.end   = resolveDayHour(+m[3], +m[4], 0, taf.issued);
+      if(g.end <= g.start) g.end = new Date(g.end.getTime() + 24*3600e3);
+      i++; continue;
+    }
+    break;
+  }
+  parseConditions(seg, i, g);
+  if(!g.start) g.start = taf.from;              // the initial group
+  // A group with nothing in it carries no information to draw.
+  if(g.vis == null && !g.clouds.length && g.wspd == null && !g.wx.length) return null;
+  return g;
+}
+
+/* Which governing group, and which worse conditional group, cover an instant. */
+function tafAt(taf, when){
+  if(!taf || !taf.groups.length) return null;
+  const t = when.getTime();
+  let gov = null;
+  for(const g of taf.groups){
+    if(g.conditional || !g.start) continue;
+    if(t >= g.start.getTime() && (!g.end || t < g.end.getTime())) gov = g;
+  }
+  if(!gov) return null;
+  const govRank = CAT_RANK[category(gov)];
+  let cond = null;
+  for(const g of taf.groups){
+    if(!g.conditional || !g.start || !g.end) continue;
+    if(t < g.start.getTime() || t >= g.end.getTime()) continue;
+    if(CAT_RANK[category(g)] > govRank &&
+       (!cond || CAT_RANK[category(g)] > CAT_RANK[category(cond)])) cond = g;
+  }
+  return { gov, cond };
+}
+
+/* The strip. Governing forecast as the body, conditional risk as a stripe
+   above it, local-hour ticks below. Width is passed in so the same function
+   serves the narrow home card and the wider popup. */
+function tafStrip(taf, hours, width){
+  if(!taf || !taf.groups.length) return '';
+  const H = hours || CONFIG.tafHours;
+  const W = width || 236, barH = 15, condH = 4, padT = condH + 2;
+  const now = new Date();
+  const t0 = new Date(Math.floor(now.getTime()/3600e3)*3600e3);   // top of this hour
+  const cw = W / H;
+
+  let body = '', stripe = '', ticks = '', any = false;
+  for(let k = 0; k < H; k++){
+    const when = new Date(t0.getTime() + k*3600e3 + 1800e3);      // mid-hour
+    const at = tafAt(taf, when);
+    const x = (k*cw).toFixed(2), w = (cw + 0.5).toFixed(2);
+    if(!at){
+      body += `<rect x="${x}" y="${padT}" width="${w}" height="${barH}"
+        fill="#2a4150" opacity=".5"/>`;
+      continue;
+    }
+    any = true;
+    body += `<rect x="${x}" y="${padT}" width="${w}" height="${barH}"
+      fill="${CAT_COLOR[category(at.gov)]}"/>`;
+    if(at.cond)
+      stripe += `<rect x="${x}" y="0" width="${w}" height="${condH}"
+        fill="${CAT_COLOR[category(at.cond)]}"/>`;
+  }
+  if(!any) return '';
+
+  for(let k = 0; k <= H; k += 3){
+    const when = new Date(t0.getTime() + k*3600e3);
+    const x = Math.min(k*cw, W - 0.5);
+    ticks += `<line x1="${x.toFixed(1)}" y1="${padT+barH}" x2="${x.toFixed(1)}"
+      y2="${padT+barH+3}" stroke="#5b7382" stroke-width="1"/>`;
+    ticks += `<text x="${x.toFixed(1)}" y="${padT+barH+12}" class="tk"
+      text-anchor="${k===0 ? 'start' : k>=H ? 'end' : 'middle'}">${
+        pad(when.getHours())}</text>`;
+  }
+  return `<svg class="tafstrip" width="${W}" height="${padT+barH+15}"
+    viewBox="0 0 ${W} ${padT+barH+15}">${stripe}${body}${ticks}</svg>`;
+}
+
+/* ---- fetching ----------------------------------------------------------- */
+const tafCache = new Map();     // id -> { taf } or { none:true }
+
+async function fetchTaf(id){
+  if(tafCache.has(id)) return tafCache.get(id);
+  let rec = { none:true };
+  try{
+    let r = await awc(`taf?ids=${id}&format=json`);
+    if(!Array.isArray(r)) r = r ? [r] : [];
+    const raw = r.map(x => x && (x.rawTAF || x.rawText || x.raw)).filter(Boolean)[0];
+    const taf = raw ? parseTaf(raw) : null;
+    if(taf && taf.groups.length) rec = { taf };
+  }catch(e){
+    console.warn('taf', id + ':', e.message);
+    return null;                 // not cached, so a later click retries
+  }
+  tafCache.set(id, rec);
+  return rec;
+}
+
+/* Most small fields issue no TAF. Walk outward from home through the stations
+   actually reporting until one has one, then remember which. */
+let homeTafId = null;
+async function findHomeTaf(){
+  if(homeTafId){ const r = await fetchTaf(homeTafId); if(r && r.taf) return r; }
+  const near = [...stations.values()]
+    .filter(st => st.dist != null)
+    .sort((a,b) => a.dist - b.dist)
+    .slice(0, CONFIG.tafSearch);
+  for(const st of near){
+    const r = await fetchTaf(st.id);
+    if(r && r.taf){ homeTafId = st.id; return r; }
+  }
+  return null;
+}
+
+/* ============================================================================
+   Trend
+   ----------------------------------------------------------------------------
+   Two tiers, because both matter and they are not the same claim:
+
+     firm  the flight category itself changed inside the window
+     soft  the category held but ceiling or visibility moved materially
+
+   A field that went from a 5,000 ft ceiling to 3,200 ft is still VFR and is
+   still worth knowing about. Drawing both at the same weight would overstate
+   the second, so the soft arrow is outlined and the firm arrow filled.
+   Stations with no meaningful change carry no arrow at all: an arrow on every
+   dot is noise, not information.
+   ========================================================================== */
+
+const TREND_COLOR = { down:'#ffb04d', up:'#7fe0a0' };
+
+/* Compare an earlier parsed observation with the current one. */
+function trendBetween(then, now){
+  if(!then || !now) return null;
+  const rThen = CAT_RANK[category(then)], rNow = CAT_RANK[category(now)];
+  if(rThen === 0 || rNow === 0) return null;          // nothing usable reported
+  if(rNow !== rThen)
+    return { dir: rNow > rThen ? 'down' : 'up', firm:true };
+
+  // Same category. Look for a material move inside it.
+  const pct = (a,b) => (a == null || b == null || a === 0) ? 0 : (b - a) / a * 100;
+  const cThen = then.ceiling == null ? 99999 : then.ceiling;
+  const cNow  = now.ceiling  == null ? 99999 : now.ceiling;
+  const dC = pct(cThen, cNow), dV = pct(then.vis, now.vis);
+  const lim = CONFIG.trendMovePct;
+
+  // Changes high up or in unrestricted visibility are not decision-relevant,
+  // so they are excluded rather than allowed to generate arrows.
+  const ceilCounts = Math.min(cThen, cNow) < 12000;
+  const visCounts  = Math.min(then.vis == null ? 99 : then.vis,
+                              now.vis  == null ? 99 : now.vis) < 10;
+
+  if((ceilCounts && dC <= -lim) || (visCounts && dV <= -lim))
+    return { dir:'down', firm:false };
+  if((ceilCounts && dC >= lim) || (visCounts && dV >= lim))
+    return { dir:'up', firm:false };
+  return null;
+}
+
+function trendArrowSVG(t){
+  if(!t) return '';
+  const c = TREND_COLOR[t.dir];
+  // Drawn to the left of the dot; the identifier label sits to the right.
+  const y = t.dir === 'down' ? 1 : -1;
+  const pts = t.dir === 'down' ? '-14,-4 -6,-4 -10,4' : '-14,4 -6,4 -10,-4';
+  return `<polygon points="${pts}" transform="translate(0,${y})"
+     fill="${t.firm ? c : 'none'}" stroke="${c}" stroke-width="1.3"
+     stroke-linejoin="round"/>`;
+}
+
+const TREND_WORDS = {
+  'down-true'  : 'deteriorating',
+  'down-false' : 'slowly deteriorating',
+  'up-true'    : 'improving',
+  'up-false'   : 'slowly improving'
+};
+const trendWords = t => t ? TREND_WORDS[t.dir + '-' + t.firm] : null;
+
+/* One extra request, same box, with a look-back window. Every station's
+   earliest observation inside the window becomes the comparison point. The
+   request is allowed to fail or come back partial without consequence: a
+   station simply carries no arrow. */
+async function loadTrend(){
+  if(!CONFIG.showTrend || isWideView()){
+    for(const st of stations.values()) st.trend = null;
+    return;
+  }
+  const bb = currentBbox();
+  let data;
+  try{
+    data = await awc(`metar?bbox=${bb.join(',')}&hours=${CONFIG.trendHours}&format=json`);
+  }catch(e){
+    console.warn('trend:', e.message);   // never disturbs the station status line
+    return;
+  }
+  if(!Array.isArray(data)) data = data ? [data] : [];
+
+  // Earliest observation per station inside the window.
+  const oldest = new Map();
+  for(const d of data){
+    const id = d.icaoId || d.station_id;
+    if(!id) continue;
+    const p = parseMetar(d.rawOb || d.rawText);
+    if(!p || !p.obsTime) continue;
+    const cur = oldest.get(id);
+    if(!cur || p.obsTime < cur.obsTime) oldest.set(id, p);
+  }
+
+  let n = 0;
+  for(const st of stations.values()){
+    const then = oldest.get(st.id);
+    // Require a real gap, or we are comparing an observation with itself.
+    const gapMin = (then && then.obsTime && st.parsed && st.parsed.obsTime)
+      ? (st.parsed.obsTime - then.obsTime) / 60000 : 0;
+    st.then  = gapMin >= 45 ? then : null;
+    st.trend = st.then ? trendBetween(st.then, st.parsed) : null;
+    if(st.trend) n++;
+  }
+  renderStations();
+  return n;
+}
+
+/* ============================================================================
+   Freezing level and cloud in the icing band
+   ----------------------------------------------------------------------------
+   Airframe ice forms in cloud between roughly 0 C and -20 C. The decision
+   inputs are therefore the altitude of the freezing level and whether cloud is
+   sitting at or above it. Both are reported as themselves. No icing index is
+   computed here: the forecast supports the two inputs, and combining them into
+   a single score would claim an authority the data does not have.
+
+   Open-Meteo, CORS-open, no key for non-commercial use. Same host already
+   serving winds aloft.
+   ========================================================================== */
+
+let frzHome = null;   // the home field's own figures, for the K1A5 card
+let frzAt   = 0;      // when the last request landed, to collapse duplicates
+
+const M_TO_FT = 3.28084;
+
+/* Classify a grid point. Three states, in increasing order of consequence:
+     clear  — no meaningful deck below the low-cloud top, so nothing to ice in
+     band   — a deck is present and the freezing level sits inside the layer
+     sfc    — the freezing level is at or below field level, which is the
+              freezing-rain and ground-ice case rather than a cruise problem */
+function frzClass(frzFt, lowPct, midPct, groundFt){
+  if(frzFt != null && groundFt != null && frzFt <= groundFt + 500) return 'sfc';
+  const deck = Math.max(lowPct || 0, midPct || 0);
+  if(deck < CONFIG.cloudThreshold) return 'clear';
+  if(frzFt == null) return 'clear';
+  // Cloud in the band when the freezing level is below the top of the deck:
+  // above that altitude the deck is colder than freezing and will ice.
+  return frzFt < CONFIG.lowCloudTopFt ? 'band' : 'clear';
+}
+
+const FRZ_WORDS = {
+  clear: 'no significant deck in the band',
+  band:  'cloud in the icing band',
+  sfc:   'freezing level at the surface'
+};
+
+async function loadFrz(force){
+  // Boot and the first station load both want this, and a pan can ask again
+  // before the previous answer lands. One forecast run covers a minute easily,
+  // so a recent result is reused rather than re-requested.
+  if(!force && Date.now() - frzAt < 60e3) return;
+  frzAt = Date.now();
+  const pts = windGrid(5);
+  // The home field is appended so its own figures come from the same model run
+  // as the grid rather than from the nearest grid point.
+  const all = pts.concat([[CONFIG.home.lat, CONFIG.home.lon]]);
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + '?latitude='  + all.map(p=>p[0].toFixed(3)).join(',')
+    + '&longitude=' + all.map(p=>p[1].toFixed(3)).join(',')
+    + '&hourly=freezing_level_height,cloud_cover_low,cloud_cover_mid'
+    + '&forecast_days=2&timezone=UTC';
+
+  let js;
+  try{ const r = await fetch(url); js = await r.json(); }
+  catch(e){ frzAt = 0; console.warn('freezing level:', e.message); return; }
+
+  const arr = Array.isArray(js) ? js : [js];
+  if(!arr.length || !arr[0].hourly){ frzAt = 0;
+    console.warn('freezing level: no hourly block'); return; }
+
+  const times = arr[0].hourly.time;
+  const nowH  = new Date().toISOString().slice(0,13);
+  let k = times.findIndex(t => t.slice(0,13) === nowH);
+  if(k < 0) k = 0;
+  k = Math.min(k + (CONFIG.frzHours|0), times.length - 1);
+
+  const read = g => {
+    const h = g.hourly;
+    const m = h.freezing_level_height ? h.freezing_level_height[k] : null;
+    return { frzFt: m == null ? null : Math.round(m * M_TO_FT),
+             low:  h.cloud_cover_low ? h.cloud_cover_low[k] : null,
+             mid:  h.cloud_cover_mid ? h.cloud_cover_mid[k] : null,
+             at:   times[k] };
+  };
+
+  // last entry is the home field
+  const homeRow = arr.length > pts.length ? read(arr[arr.length-1]) : null;
+  if(homeRow){
+    homeRow.cls = frzClass(homeRow.frzFt, homeRow.low, homeRow.mid,
+                           CONFIG.home.elev);
+    frzHome = homeRow;
+    renderHome();
+  }
+
+  layers.frz.clearLayers();
+  for(let n = 0; n < pts.length && n < arr.length; n++){
+    const r = read(arr[n]);
+    if(r.frzFt == null) continue;
+    const cls = frzClass(r.frzFt, r.low, r.mid, null);
+    const deck = Math.max(r.low || 0, r.mid || 0);
+    const html = `<svg width="86" height="46" viewBox="-43 -23 86 46">
+      <line x1="-15" y1="-5" x2="15" y2="-5" stroke="currentColor"
+            stroke-width="1.1" opacity=".45" stroke-dasharray="4 3"/>
+      <text class="${cls === 'clear' ? 'lvl' : cls === 'band' ? 'warn' : 'sfc'}"
+            x="0" y="-9" text-anchor="middle">${r.frzFt.toLocaleString()}</text>
+      <text class="cap" x="0" y="7" text-anchor="middle">FRZ ft${
+        deck >= CONFIG.cloudThreshold ? ' · ' + Math.round(deck) + '% cld' : ''
+      }</text></svg>`;
+    L.marker([pts[n][0], pts[n][1]], {
+      icon: L.divIcon({ className:'frzpt', html, iconSize:[86,46], iconAnchor:[43,23] }),
+      interactive: false
+    }).addTo(layers.frz);
+  }
+}
+
+/* ============================================================================
    AIRMET / SIGMET
    ========================================================================== */
 const HAZ_COLOR = { IFR:'#e8523f', MTN_OBSCN:'#c88a3a', TURB:'#e0b84a',
@@ -1448,6 +2107,43 @@ async function loadAirSig(){
   if(!shown) setStatus('No AIRMET or SIGMET currently active in this region.');
 }
 
+
+/* The popup's forecast section. Rendered from the cache, so the first open
+   shows a placeholder and the fetch rewrites the popup when it lands. */
+function tafBlock(id, width){
+  const rec = tafCache.get(id);
+  if(!rec) return '<div class="tafnone">Forecast loading…</div>';
+  if(rec.none) return '<div class="tafnone">No TAF issued for this field.</div>';
+  const taf = rec.taf;
+  const strip = tafStrip(taf, CONFIG.tafHours, width || 264);
+  if(!strip) return '<div class="tafnone">TAF holds no period covering the next '
+    + CONFIG.tafHours + ' hours.</div>';
+  const hasCond = taf.groups.some(g => g.conditional);
+  return `<div class="tafhd"><b>Forecast</b> next ${CONFIG.tafHours} h
+      <span class="at">${taf.id || id}${taf.amended ? ' amended' : ''}
+        ${taf.issued ? '· issued ' + pad(taf.issued.getUTCHours()) + ':' +
+          pad(taf.issued.getUTCMinutes()) + 'Z' : ''}</span></div>
+    ${strip}
+    ${hasCond ? '<div class="tafnote">Upper stripe is TEMPO or PROB: a stated '
+      + 'risk inside the period, not a forecast of it.</div>' : ''}`;
+}
+
+/* Leaflet builds popup content on open, so the fetch is hung off that event
+   and the content replaced once. A field with no TAF is cached as such and
+   never asked again. */
+map.on('popupopen', async ev => {
+  const el = ev.popup.getElement();
+  const slot = el && el.querySelector('.tafslot');
+  if(!slot) return;
+  const id = slot.dataset.id;
+  if(tafCache.has(id)) return;                  // already rendered from cache
+  const rec = await fetchTaf(id);
+  if(!rec) return;                              // request failed; leave the note
+  const live = ev.popup.getElement();
+  const s2 = live && live.querySelector(`.tafslot[data-id="${id}"]`);
+  if(s2){ s2.innerHTML = tafBlock(id); ev.popup.update(); }
+});
+
 /* ============================================================================
    Controls
    ========================================================================== */
@@ -1472,6 +2168,18 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
       if(on){ map.removeLayer(layers.airsig); } else { layers.airsig.addTo(map); loadAirSig(); }
       return;
     }
+    if(key==='trend'){
+      CONFIG.showTrend = !on;
+      if(on){ for(const st of stations.values()){ st.trend = null; st.then = null; }
+              renderStations(); }
+      else  { loadTrend(); }
+      return;
+    }
+    if(key==='frz'){
+      if(on){ map.removeLayer(layers.frz); }
+      else  { layers.frz.addTo(map); if(!layers.frz.getLayers().length) loadFrz(true); }
+      return;
+    }
     if(key==='wind3k'||key==='wind10k'){
       if(on){ map.removeLayer(layers[key]); }
       else{ layers[key].addTo(map); loadWinds(key); }
@@ -1488,6 +2196,7 @@ function syncChips(){
   set('terrain', CONFIG.showTerrain);
   set('radar',   CONFIG.showRadar);
   set('barbs',   showBarbs);
+  set('trend',   CONFIG.showTrend);
 }
 syncChips();
 
@@ -1516,10 +2225,11 @@ map.on('moveend', ()=>{
 });
 map.on('zoomend', renderStations);                // re-thin for the new scale
 
+/* loadMetars already refreshes the overlays that follow the station data, so
+   this only forces that pass and busts the radar tile cache, which nothing
+   else touches. Re-requesting them here would double every poll. */
 function refreshAll(){
   loadMetars(true);
-  for(const k of ['wind3k','wind10k']) if(map.hasLayer(layers[k])) loadWinds(k);
-  if(map.hasLayer(layers.airsig)) loadAirSig();
   if(map.hasLayer(radar)) radar.setUrl(RADAR_TPL + '?_=' + Date.now());
 }
 
@@ -1556,6 +2266,9 @@ function readArgs(){
   CONFIG.followMap   = argBool(q.get('follow'),  CONFIG.followMap);
   CONFIG.showRadar   = argBool(q.get('radar'),   CONFIG.showRadar);
   CONFIG.national    = argBool(q.get('national'), CONFIG.national);
+  CONFIG.showTrend   = argBool(q.get('trend'),    CONFIG.showTrend);
+  const th = parseInt(q.get('tafhours'), 10);
+  if(th >= 3 && th <= 24) CONFIG.tafHours = th;
 
   const b = String(q.get('base')||'').trim().toLowerCase();
   if(b && BASEMAPS[b]) CONFIG.basemap = b;
@@ -1638,6 +2351,7 @@ async function boot(){
     applyHome(CONFIG.home);
   }
   loadMetars(true);
+  loadFrz();        // freezing level at the home field, overlay or not
 }
 
 boot();
