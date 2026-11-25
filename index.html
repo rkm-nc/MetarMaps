@@ -1,4 +1,3 @@
-
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
@@ -6,6 +5,8 @@
    handful of public weather feeds. Serve it from any static host.
 
    Reference and planning only. Not for navigation.
+
+   Developed by R. McMahan rkm.public@gmail.com
 
    ----------------------------------------------------------------------------
    INVOCATION — the query string is the argument list
@@ -244,7 +245,11 @@
 <style>
   :root{
     --bg:#091720; --bg-2:#0d2632; --panel:rgba(9,23,32,.88); --line:rgba(140,185,205,.22);
-    --ink:#d6e7f0; --ink-dim:#7f9aa8; --ink-faint:#5b7382;
+    /* Measured against the worst realistic background, which is not the base
+       colour but the base with the hillshade over it. At the old 0.34 opacity
+       the hillshade lifted the effective background to #3a4449 and dragged
+       ink-dim to 3.4:1 and ink-faint to 2.0:1. Both now clear 4.5:1 there. */
+    --ink:#d6e7f0; --ink-dim:#9ab4c2; --ink-faint:#93aab8;
     --vfr:#39c46e; --mvfr:#3d9be9; --ifr:#e8523f; --lifr:#c25ad6; --none:#64798a;
     --accent:#59d4e8;
     --halo:#091720;   /* outline behind marker labels; flips on a light base */
@@ -379,7 +384,10 @@
   #scrubRead b{display:block;color:var(--ink);font-weight:600;font-size:12px}
   #scrubRead span{color:var(--ink-faint)}
   #scrubWarn{background:rgba(255,194,77,.11);border:1px solid rgba(255,194,77,.45);
-    border-radius:3px;padding:5px 9px;font-size:11px;color:#ffd387;backdrop-filter:blur(8px)}
+    border-radius:3px;padding:5px 9px;font-size:11px;line-height:1.45;color:#ffd387;
+    backdrop-filter:blur(8px)}
+  #scrubWarn b{font-weight:700}
+  #scrubWarn .unm{color:#d8c49a}
   #gairNote{background:var(--panel);border:1px solid var(--line);border-radius:3px;
     padding:5px 9px;font:11px var(--mono);color:var(--ink-dim);backdrop-filter:blur(8px)}
 
@@ -401,7 +409,7 @@
   #routeMsg.bad{color:#ffb4a8}
   #routeProf{margin-top:4px}
   svg.prof{display:block;width:100%;height:auto}
-  svg.prof .pl{font:9px/1 var(--mono);fill:var(--ink-faint)}
+  svg.prof .pl{font:9.5px/1 var(--mono);fill:var(--ink-faint)}
   svg.prof .pl.wp{font-weight:600;fill:var(--accent)}
   svg.prof .pl.ax{font-size:8px}
   #route .rkey{margin-top:5px;font-size:10.5px;line-height:1.4;color:var(--ink-faint)}
@@ -457,8 +465,8 @@
   .stn{background:none;border:0;pointer-events:none}
   .stn svg{overflow:visible;display:block;pointer-events:none}
   .stn .hit{pointer-events:auto;cursor:pointer}
-  .stn .lbl{font:600 9px/1 var(--mono);fill:var(--ink);paint-order:stroke;
-    stroke:var(--halo);stroke-width:2.5px;stroke-linejoin:round}
+  .stn .lbl{font:600 9.5px/1 var(--mono);fill:var(--ink);paint-order:stroke;
+    stroke:var(--halo);stroke-width:3px;stroke-linejoin:round}
   body.lightbase .stn .lbl{fill:#0b1d27}
   body.lightbase #map{background:#e8ecef}
   .stn.home .ring{stroke:var(--accent);stroke-width:1.6;fill:none}
@@ -486,20 +494,19 @@
 
   .windpt{background:none;border:0}
   .windpt svg{overflow:visible}
-  .windpt text{font:600 9px/1 var(--mono);fill:#bcd6e2;paint-order:stroke;
-    stroke:var(--halo);stroke-width:2.5px}
+  .windpt text{font:600 9.5px/1 var(--mono);fill:#cfe2ec;paint-order:stroke;
+    stroke:var(--halo);stroke-width:3px;stroke-linejoin:round}
   body.lightbase .windpt text{fill:#14425a}
 
   .sig{font:600 10px/1 var(--sans)}
 
-  .frzpt{background:none;border:0}
-  .frzpt svg{overflow:visible}
-  .frzpt text{font:600 10px/1 var(--mono);paint-order:stroke;
-    stroke:var(--halo);stroke-width:2.6px;stroke-linejoin:round}
-  .frzpt .lvl{fill:#9fe8c0}            /* no cloud in the band */
-  .frzpt .warn{fill:#ffc24d}           /* cloud sitting in the band */
-  .frzpt .sfc{fill:#ff8f7a}            /* freezing level at or near the surface */
-  .frzpt .cap{font-size:8.5px;fill:#8fa9b6}
+  /* Contour labels. The altitude rides on the line rather than being listed
+     at every lattice point, which is what the earlier version did and what
+     made the layer a scatter of numbers instead of a field. */
+  .frzlbl{background:none;border:0;pointer-events:none}
+  .frzlbl span{display:block;text-align:center;font:700 10px/14px var(--mono);
+    letter-spacing:.02em;
+    paint-order:stroke;-webkit-text-stroke:3px var(--halo)}
   /* Not enough room between the corners: the field list gives way first. */
   @media (max-width:1080px){
     #obs{display:none}
@@ -595,6 +602,7 @@
     <span><i style="background:var(--lifr)"></i>LIFR</span>
     <span><i style="background:var(--none)"></i>no data</span>
     <span>barb: half 5 · full 10 · pennant 50 kt</span>
+    <span>frz: contours in kft, shading = cloud in the icing band</span>
   </div>
 </aside>
 
@@ -882,7 +890,6 @@ const CONFIG = {
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
 
   proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
-
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
@@ -1331,6 +1338,11 @@ WHAT THE READOUTS MEAN
              at field level, which is the freezing-precipitation case. The two
              inputs are shown as themselves: no icing index is computed, as
              the forecast does not support one.
+  Frz layer  Contour lines of the 0 C level, labelled in thousands of feet and
+             warming in colour as the level descends, over shading that marks
+             where cloud sits in the icing band. The shading is drawn at
+             lattice resolution and looks like it, because it is a 7x7 sample
+             of a model field rather than a high-resolution product.
   Trend      Filled arrow, the flight category changed. Outlined arrow, the
              category held but ceiling or visibility moved materially. The
              popup carries the earlier figures so the move is auditable.
@@ -1339,7 +1351,9 @@ WHAT THE READOUTS MEAN
              it. Most small fields issue no TAF, so the home card shows the
              nearest field that does and names it. A cyan outline marks the
              hour the time scrub is sitting on.
-  Scrub      One hour offset, read by every forecast layer. Observations
+  Scrub      One hour offset, read by every forecast layer. The dock names
+             what is actually following it on screen right now, rather than
+             listing every layer it could drive. Observations
              cannot be aged forward, so a non-zero offset puts an amber frame
              round the display, the way a panel annunciator marks an
              off-nominal mode, and the dock lists what moved and what did not.
@@ -1476,7 +1490,9 @@ let labels = null;
 
 const terrain = L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom:13, opacity:0.34, attribution:'Esri / USGS' });
+  // 0.22, not 0.34: World_Hillshade is a grey image, so it lightens the dark
+  // base rather than shading it, and every marker sits on the result.
+  { maxZoom:13, opacity:0.22, attribution:'Esri / USGS' });
 
 const RADAR_TPL = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
 const radar = L.tileLayer(RADAR_TPL,
@@ -2024,6 +2040,14 @@ function windGrid(n=5){
    re-reads an array index rather than asking the server again. */
 let windData = { wind3k:null, wind10k:null };
 
+/* How many forecast days to ask for. Open-Meteo's hourly series starts at
+   midnight UTC of the current day, so covering a scrub of N hours needs the
+   rest of today plus N. Deriving it means raising scrubMax cannot silently
+   outrun the data and leave the slider clamping at its far end. */
+function forecastDays(){
+  return Math.max(2, Math.ceil((24 + CONFIG.scrubMax) / 24));
+}
+
 /* Index into an Open-Meteo hourly array for now plus an offset. The series
    starts at midnight UTC of the current day, so "now" has to be found rather
    than assumed, and the result is clamped to what the response actually holds. */
@@ -2042,7 +2066,7 @@ async function loadWinds(key){
     + '?latitude='  + pts.map(p=>p[0].toFixed(3)).join(',')
     + '&longitude=' + pts.map(p=>p[1].toFixed(3)).join(',')
     + `&hourly=wind_speed_${lvl.hpa}hPa,wind_direction_${lvl.hpa}hPa,temperature_${lvl.hpa}hPa`
-    + '&wind_speed_unit=kn&forecast_days=3&timezone=UTC';
+    + '&wind_speed_unit=kn&forecast_days=' + forecastDays() + '&timezone=UTC';
   let js;
   try{ const r = await fetch(url); js = await r.json(); }
   catch(e){ console.warn('winds aloft:', e.message); return; }
@@ -2068,7 +2092,7 @@ function renderWinds(key){
     const tmp = Math.round(h[`temperature_${lvl.hpa}hPa`][idx]);
     if(!isFinite(spd) || !isFinite(dir)) return;
     const html = `<svg width="80" height="80" viewBox="-40 -40 80 80">
-      ${barbSVG(dir,spd,null,'#8fd3e6')}
+      ${barbSVG(dir,spd,null,BM.dark ? '#a5dcec' : '#14425a')}
       <text x="8" y="12" font-size="9">${spd}kt ${tmp}°</text></svg>`;
     L.marker([d.pts[n][0], d.pts[n][1]], {
       icon:L.divIcon({className:'windpt',html,iconSize:[80,80],iconAnchor:[40,40]}),
@@ -2433,39 +2457,111 @@ const FRZ_WORDS = {
   sfc:   'freezing level at the surface'
 };
 
-let frzData = null;      // { pts, arr } held so the scrub costs no request
+let frzData = null;      // { lats, lons, arr } held so the scrub costs no request
+let frzFor  = null;      // the bbox it was fetched for, so a pan is detected
+let frzBusy = false;     // a request is in flight
+
+const FRZ_N = 7;         // grid is FRZ_N x FRZ_N; Open-Meteo weights calls by
+                         // variable count, so this is kept deliberately modest
+
+/* A regular lat/lon lattice over the current view. Contours need a lattice
+   rather than the scatter of points the wind barbs use, so the axes are
+   returned separately. */
+function frzLattice(){
+  const g = currentBbox(), lats = [], lons = [];
+  for(let i = 0; i < FRZ_N; i++){
+    lats.push(g[0] + (g[2]-g[0]) * (i + 0.5) / FRZ_N);
+    lons.push(g[1] + (g[3]-g[1]) * (i + 0.5) / FRZ_N);
+  }
+  return { g, lats, lons };
+}
+
+/* Marching squares. For each cell the four corners are tested against the
+   level and the crossings interpolated along the edges that straddle it. Two
+   crossings make one segment; four is a saddle, which is genuinely ambiguous
+   from four samples, so both pairs are drawn rather than a guess being made
+   about which way the ridge runs. Segments share endpoints exactly, so they
+   read as continuous lines without needing to be stitched. */
+function contourSegments(grid, lats, lons, level){
+  const segs = [], n = lats.length, m = lons.length;
+  const interp = (v1, v2, c1, c2) => {
+    const t = (level - v1) / (v2 - v1);
+    return [ c1[0] + (c2[0]-c1[0])*t, c1[1] + (c2[1]-c1[1])*t ];
+  };
+  for(let i = 0; i < n-1; i++) for(let j = 0; j < m-1; j++){
+    const v = [ grid[i][j], grid[i][j+1], grid[i+1][j+1], grid[i+1][j] ];
+    if(v.some(x => x == null || !isFinite(x))) continue;
+    const c = [ [lats[i],lons[j]], [lats[i],lons[j+1]],
+                [lats[i+1],lons[j+1]], [lats[i+1],lons[j]] ];
+    const cross = [];
+    for(let e = 0; e < 4; e++){
+      const p = e, q = (e+1) % 4;
+      if((v[p] >= level) !== (v[q] >= level))
+        cross.push(interp(v[p], v[q], c[p], c[q]));
+    }
+    if(cross.length === 2) segs.push(cross);
+    else if(cross.length === 4){ segs.push([cross[0],cross[1]]); segs.push([cross[2],cross[3]]); }
+  }
+  return segs;
+}
+
+/* Contour colour. A low freezing level is the one worth noticing, so the scale
+   warms as it descends rather than being uniform. */
+function frzLineColor(ft){
+  if(ft <= 3000) return '#ff9d6e';
+  if(ft <= 6000) return '#ffcf6b';
+  if(ft <= 10000) return '#9fe0c4';
+  return '#86c8e8';
+}
 
 async function loadFrz(force){
-  // Boot and the first station load both want this, and a pan can ask again
-  // before the previous answer lands. One forecast run covers a minute easily,
-  // so a recent result is reused rather than re-requested.
-  if(!force && Date.now() - frzAt < 60e3) return;
+  const { g, lats, lons } = frzLattice();
+  // The old guard was time-only, which meant a zoom or a pan inside a minute
+  // was suppressed and the field stayed drawn over wherever it had first been
+  // fetched. It now refetches whenever the view has moved outside what the
+  // held data covers, and otherwise still collapses duplicate calls.
+  const covered = frzFor &&
+    g[0] >= frzFor[0] - 0.01 && g[1] >= frzFor[1] - 0.01 &&
+    g[2] <= frzFor[2] + 0.01 && g[3] <= frzFor[3] + 0.01;
+  // frzFor is only set once a response lands, so coverage alone cannot stop a
+  // second call issued while the first is still in the air. Startup makes two
+  // such calls — one from boot, one when the stations finish — and without
+  // this flag both went out.
+  if(frzBusy) return;
+  if(!force && covered && Date.now() - frzAt < 600e3) return;
+  frzBusy = true;
   frzAt = Date.now();
-  const pts = windGrid(5);
-  // The home field is appended so its own figures come from the same model run
-  // as the grid rather than from the nearest grid point.
-  const all = pts.concat([[CONFIG.home.lat, CONFIG.home.lon]]);
+
+  // Row-major lattice, with the home field appended so its own figures come
+  // from the same model run.
+  const all = [];
+  for(let i = 0; i < FRZ_N; i++) for(let j = 0; j < FRZ_N; j++) all.push([lats[i], lons[j]]);
+  all.push([CONFIG.home.lat, CONFIG.home.lon]);
+
   const url = 'https://api.open-meteo.com/v1/forecast'
-    + '?latitude='  + all.map(p=>p[0].toFixed(3)).join(',')
-    + '&longitude=' + all.map(p=>p[1].toFixed(3)).join(',')
+    + '?latitude='  + all.map(q=>q[0].toFixed(3)).join(',')
+    + '&longitude=' + all.map(q=>q[1].toFixed(3)).join(',')
     + '&hourly=freezing_level_height,cloud_cover_low,cloud_cover_mid'
-    + '&forecast_days=3&timezone=UTC';
+    + '&forecast_days=' + forecastDays() + '&timezone=UTC';
 
   let js;
   try{ const r = await fetch(url); js = await r.json(); }
-  catch(e){ frzAt = 0; console.warn('freezing level:', e.message); return; }
+  catch(e){ frzBusy = false; frzAt = 0;
+    console.warn('freezing level:', e.message); return; }
+  frzBusy = false;
 
   const arr = Array.isArray(js) ? js : [js];
   if(!arr.length || !arr[0].hourly){ frzAt = 0;
     console.warn('freezing level: no hourly block'); return; }
 
-  frzData = { pts, arr };
+  frzData = { lats, lons, arr };
+  frzFor  = g;
   renderFrz();
 }
 
-/* Read one grid point at the scrubbed hour. */
-function frzRow(g, idx, times){
-  const h = g.hourly;
+/* Read one lattice point at the scrubbed hour. */
+function frzRow(gpt, idx, times){
+  const h = gpt.hourly;
   const m = h.freezing_level_height ? h.freezing_level_height[idx] : null;
   return { frzFt: m == null ? null : Math.round(m * M_TO_FT),
            low:  h.cloud_cover_low ? h.cloud_cover_low[idx] : null,
@@ -2475,37 +2571,73 @@ function frzRow(g, idx, times){
 
 function renderFrz(){
   if(!frzData) return;
-  const { pts, arr } = frzData;
+  const { lats, lons, arr } = frzData;
   const times = arr[0].hourly.time;
   const idx = hourIndex(times, scrubH);
+  const N = lats.length;
 
-  // Last entry is the home field, appended to the grid request.
-  if(arr.length > pts.length){
+  // Last entry is the home field, appended to the lattice request.
+  if(arr.length > N*N){
     const row = frzRow(arr[arr.length-1], idx, times);
     row.cls = frzClass(row.frzFt, row.low, row.mid, CONFIG.home.elev);
     frzHome = row;
     renderHome();
   }
 
+  const grid = [], band = [];
+  for(let i = 0; i < N; i++){
+    grid.push([]); band.push([]);
+    for(let j = 0; j < N; j++){
+      const gpt = arr[i*N + j];
+      if(!gpt || !gpt.hourly){ grid[i].push(null); band[i].push(null); continue; }
+      const r = frzRow(gpt, idx, times);
+      grid[i].push(r.frzFt);
+      band[i].push({ cls: frzClass(r.frzFt, r.low, r.mid, null),
+                     deck: Math.max(r.low || 0, r.mid || 0) });
+    }
+  }
+
   layers.frz.clearLayers();
-  for(let n = 0; n < pts.length && n < arr.length; n++){
-    if(!arr[n].hourly) continue;
-    const r = frzRow(arr[n], idx, times);
-    if(r.frzFt == null) continue;
-    const cls = frzClass(r.frzFt, r.low, r.mid, null);
-    const deck = Math.max(r.low || 0, r.mid || 0);
-    const html = `<svg width="86" height="46" viewBox="-43 -23 86 46">
-      <line x1="-15" y1="-5" x2="15" y2="-5" stroke="currentColor"
-            stroke-width="1.1" opacity=".45" stroke-dasharray="4 3"/>
-      <text class="${cls === 'clear' ? 'lvl' : cls === 'band' ? 'warn' : 'sfc'}"
-            x="0" y="-9" text-anchor="middle">${r.frzFt.toLocaleString()}</text>
-      <text class="cap" x="0" y="7" text-anchor="middle">FRZ ft${
-        deck >= CONFIG.cloudThreshold ? ' · ' + Math.round(deck) + '% cld' : ''
-      }</text></svg>`;
-    L.marker([pts[n][0], pts[n][1]], {
-      icon: L.divIcon({ className:'frzpt', html, iconSize:[86,46], iconAnchor:[43,23] }),
-      interactive: false
+
+  // Where there is cloud in the icing band, shaded at lattice resolution. The
+  // cells are deliberately visible as cells: this is a 7x7 sample of a model
+  // field, not a high-resolution product, and drawing it smooth would imply
+  // more than the data carries.
+  const dLat = (lats[1] - lats[0]) / 2, dLon = (lons[1] - lons[0]) / 2;
+  for(let i = 0; i < N; i++) for(let j = 0; j < N; j++){
+    const b = band[i][j];
+    if(!b || b.cls === 'clear') continue;
+    L.rectangle([[lats[i]-dLat, lons[j]-dLon], [lats[i]+dLat, lons[j]+dLon]], {
+      stroke:false, fillColor: b.cls === 'sfc' ? '#ff6a4d' : '#ffc24d',
+      fillOpacity: b.cls === 'sfc' ? 0.20 : 0.13, interactive:false
     }).addTo(layers.frz);
+  }
+
+  // Contours every 2,000 ft across the range actually present.
+  const flat = grid.flat().filter(v => v != null && isFinite(v));
+  if(!flat.length) return;
+  const lo = Math.floor(Math.min(...flat)/2000)*2000;
+  const hi = Math.ceil(Math.max(...flat)/2000)*2000;
+  const centre = map.getCenter();
+
+  for(let lvl = Math.max(lo, 2000); lvl <= hi; lvl += 2000){
+    const segs = contourSegments(grid, lats, lons, lvl);
+    if(!segs.length) continue;
+    const color = frzLineColor(lvl);
+    L.polyline(segs, { color, weight:1.8, opacity:.95, interactive:false }).addTo(layers.frz);
+
+    // One label per level, on the segment nearest the middle of the view, so
+    // the lines are identified without papering the map with numbers.
+    let best = null, bestD = Infinity;
+    for(const sg of segs){
+      const mid = [ (sg[0][0]+sg[1][0])/2, (sg[0][1]+sg[1][1])/2 ];
+      const d = Math.hypot(mid[0]-centre.lat, mid[1]-centre.lng);
+      if(d < bestD){ bestD = d; best = mid; }
+    }
+    if(best)
+      L.marker(best, { interactive:false, icon: L.divIcon({ className:'frzlbl',
+        html:`<span style="color:${color}">${(lvl/1000)}k</span>`,
+        iconSize:[34,14], iconAnchor:[17,7] }) }).addTo(layers.frz);
   }
 }
 
@@ -2698,7 +2830,7 @@ async function loadRouteProfile(){
   const url = 'https://api.open-meteo.com/v1/forecast'
     + '?latitude='  + pts.map(q=>q[0].toFixed(4)).join(',')
     + '&longitude=' + pts.map(q=>q[1].toFixed(4)).join(',')
-    + '&hourly=freezing_level_height&forecast_days=3&timezone=UTC';
+    + '&hourly=freezing_level_height&forecast_days=' + forecastDays() + '&timezone=UTC';
   let js;
   try{ const r = await fetch(url); js = await r.json(); }
   catch(e){ console.warn('route profile:', e.message); return; }
@@ -2755,7 +2887,7 @@ function renderRouteProfile(){
   const terrFill = terrPath
     ? `<path d="${terrPath}L${X(total).toFixed(1)},${Y(0).toFixed(1)} L${X(0).toFixed(1)},${Y(0).toFixed(1)} Z"
          fill="#2c4455" stroke="none"/>
-       <path d="${terrPath}" fill="none" stroke="#6f93a6" stroke-width="1.2"/>` : '';
+       <path d="${terrPath}" fill="none" stroke="#8aabbc" stroke-width="1.3"/>` : '';
 
   // freezing level
   let frzPath = '';
@@ -3031,6 +3163,10 @@ map.on('popupopen', async ev => {
    ========================================================================== */
 document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
   btn.onclick = ()=>{
+    // Whatever this toggle does, the scrub banner's list of what moves is now
+    // out of date, so it is rebuilt after the handler runs.
+    setTimeout(() => { const w = $('#scrubWarn');
+      if(w && !w.hidden) w.innerHTML = scrubMovedText(); }, 0);
     const key = btn.dataset.layer;
     const on = btn.getAttribute('aria-pressed')==='true';
     btn.setAttribute('aria-pressed', String(!on));
@@ -3085,6 +3221,33 @@ document.querySelectorAll('.chip[data-layer]').forEach(btn=>{
    let its observations drift silently into the future would be worse than no
    scrub at all.
    ------------------------------------------------------------------------- */
+/* Name what the scrub is actually driving, rather than listing every layer it
+   could drive. The earlier wording claimed the freezing level, winds, G-AIRMET
+   and the route profile all moved whether or not any of them were on screen,
+   which left the slider looking broken when none were: the honest answer is
+   the list of things visible right now. */
+function scrubMovedText(){
+  const live = [];
+  if(map.hasLayer(layers.frz))     live.push('freezing-level contours and icing shading');
+  if(map.hasLayer(layers.wind3k))  live.push('3K winds');
+  if(map.hasLayer(layers.wind10k)) live.push('10K winds');
+  if(map.hasLayer(layers.gairmet)) live.push('G-AIRMET');
+  if(routeLegs)                    live.push('the route profile');
+
+  // These two follow the scrub whether or not any overlay is on.
+  const always = [];
+  if(frzData) always.push('the freezing level on the ' + CONFIG.home.id + ' card');
+  if(homeTafId) always.push('the marker on the forecast strip');
+
+  const moved = live.concat(always);
+  const head = moved.length
+    ? '<b>Moved:</b> ' + moved.join(', ') + '.'
+    : '<b>Nothing on screen follows the clock yet.</b> Turn on Freezing level, '
+      + 'a wind level or G-AIRMET, or plot a route.';
+  return head + ' <span class="unm"><b>Unchanged:</b> station dots, trend and '
+       + 'reports — those are current observations.</span>';
+}
+
 function scrubTarget(){
   return new Date(Math.floor(Date.now()/3600e3)*3600e3 + scrubH*3600e3);
 }
@@ -3115,9 +3278,7 @@ function applyScrub(h, opts){
   if(frame) frame.hidden = scrubH === 0;
   if(warn){
     warn.hidden = scrubH === 0;
-    warn.textContent = 'Moved: freezing level, winds aloft, G-AIRMET, route '
-      + 'profile. Unchanged: station dots, trend and reports, which are '
-      + 'current observations.';
+    warn.innerHTML = scrubMovedText();
   }
 
   // Every forecast layer re-reads the hour it already holds.
@@ -3225,7 +3386,13 @@ map.on('moveend', ()=>{
   renderStations();                               // re-sort and re-thin for the new view
   if(!CONFIG.followMap) return;
   clearTimeout(panTimer);
-  panTimer = setTimeout(()=>loadMetars(), 700);   // debounce: one fetch per pause
+  panTimer = setTimeout(()=>{
+    loadMetars();
+    // Called directly rather than left to loadMetars, which returns early when
+    // the station data already covers the view. The freezing-level lattice has
+    // its own coverage test and decides for itself whether to refetch.
+    loadFrz();
+  }, 700);
 });
 map.on('zoomend', renderStations);                // re-thin for the new scale
 // Hazard polygons are clipped to the view, so a pan re-clips without refetching.
