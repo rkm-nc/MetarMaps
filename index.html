@@ -1,3 +1,4 @@
+
 /* ============================================================================
    MetarMaps — live regional METAR map
    ----------------------------------------------------------------------------
@@ -5,8 +6,6 @@
    handful of public weather feeds. Serve it from any static host.
 
    Reference and planning only. Not for navigation.
-
-   Developed by R. McMahan rkm.public@gmail.com
 
    ----------------------------------------------------------------------------
    INVOCATION — the query string is the argument list
@@ -383,11 +382,16 @@
   #scrubRead{flex:none;min-width:84px;text-align:right;font:11px/1.25 var(--mono)}
   #scrubRead b{display:block;color:var(--ink);font-weight:600;font-size:12px}
   #scrubRead span{color:var(--ink-faint)}
-  #scrubWarn{background:rgba(255,194,77,.11);border:1px solid rgba(255,194,77,.45);
-    border-radius:3px;padding:5px 9px;font-size:11px;line-height:1.45;color:#ffd387;
-    backdrop-filter:blur(8px)}
-  #scrubWarn b{font-weight:700}
-  #scrubWarn .unm{color:#d8c49a}
+  /* An 11% amber wash over a blur meant the text was really sitting on the
+     map, so it read as yellow on blue and fell to 1.1:1 over the light base
+     and 2.7:1 over radar. The backing is near-opaque now and the amber lives
+     in the border and the type: worst case across the dark base, the
+     hillshade, the light base and radar is 11.6:1. */
+  #scrubWarn{background:rgba(21,17,10,.94);border:1px solid rgba(255,194,77,.6);
+    border-radius:3px;padding:6px 10px;font-size:11.5px;line-height:1.5;
+    color:#ffd27a}
+  #scrubWarn b{font-weight:700;color:#ffdc96}
+  #scrubWarn .unm{color:#e4d3b4}
   #gairNote{background:var(--panel);border:1px solid var(--line);border-radius:3px;
     padding:5px 9px;font:11px var(--mono);color:var(--ink-dim);backdrop-filter:blur(8px)}
 
@@ -522,8 +526,10 @@
     #obs{display:none}
       .leaflet-control-zoom{display:none}
     /* The home card owns the bottom on a phone, so the dock sits above it. */
+    /* Top-anchored here, so the column is reversed to keep the slider as the
+       element that holds its place. */
     #dock{bottom:auto;top:10px;left:10px;right:calc(var(--rail-w) + 20px);
-      transform:none;width:auto}
+      transform:none;width:auto;flex-direction:column-reverse}
     #scrubRead{min-width:68px}
     body.routeopen #dock{top:10px;bottom:auto;left:10px;right:10px}
     body.routeopen #home{display:none}
@@ -607,14 +613,13 @@
 </aside>
 
 <div id="dock">
-  <div id="scrub">
-    <button id="scrubNow" title="Back to current conditions">Now</button>
-    <input id="scrubRange" type="range" min="0" max="24" step="1" value="0"
-           aria-label="Forecast hours ahead">
-    <div id="scrubRead"><b id="scrubAt">now</b><span id="scrubOff"></span></div>
-  </div>
-  <div id="scrubWarn" hidden></div>
-  <div id="gairNote" hidden></div>
+  <!-- Order matters. The dock is anchored to the bottom of the window, so the
+       stack grows upward: whatever sits LAST keeps its position when anything
+       above it appears. The slider is therefore last, and the notice that
+       appears when it moves sits immediately above it — close enough to read
+       as belonging to the control, without displacing it. On a phone the dock
+       is anchored to the top instead, so the column is reversed there and the
+       slider is again the fixed element. -->
   <section id="route" hidden>
     <div class="rrow">
       <input id="routeIn" type="text" placeholder="1A5 AVL TYS"
@@ -629,6 +634,14 @@
       a hollow circle means no ceiling reported. Nothing is interpolated
       between fields.</div>
   </section>
+  <div id="gairNote" hidden></div>
+  <div id="scrubWarn" hidden></div>
+  <div id="scrub">
+    <button id="scrubNow" title="Back to current conditions">Now</button>
+    <input id="scrubRange" type="range" min="0" max="24" step="1" value="0"
+           aria-label="Forecast hours ahead">
+    <div id="scrubRead"><b id="scrubAt">now</b><span id="scrubOff"></span></div>
+  </div>
 </div>
 
 
@@ -637,238 +650,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-/* ============================================================================
-   MetarMaps — live regional METAR map
-   ----------------------------------------------------------------------------
-   One file. No build step, no server-side code. Two CDN files (Leaflet) and a
-   handful of public weather feeds. Serve it from any static host.
-
-   Reference and planning only. Not for navigation.
-
-   ----------------------------------------------------------------------------
-   INVOCATION — the query string is the argument list
-   ----------------------------------------------------------------------------
-   This runs over HTTP, so options arrive in the URL. Nothing about the home
-   field is hardcoded: its coordinates, elevation and site name are resolved
-   against the Aviation Weather Center at startup, which is what makes density
-   altitude correct for whatever field is named.
-
-     ?apt=KAVL      Home field. ICAO or FAA identifier, case insensitive.
-                    Three characters take a K prefix, so 1a5, rhp and 24a all
-                    resolve. Four characters pass through, so CYYZ and PANC
-                    work. Anything else is rejected rather than guessed at.
-                    An identifier that resolves to nothing leaves the map on
-                    the fallback field and says so, rather than silently
-                    showing the wrong airport.
-                    Default: K1A5 (Macon County, Franklin, NC).
-
-     ?span=2.5      Half-width of the opening view, in degrees of latitude.
-                    Accepted range 0.2 to 12. Longitude is widened by
-                    1/cos(lat) so the box stays roughly square on the ground.
-                    Default: 1.7, about 200 nm across at these latitudes.
-
-     ?zoom=10       Opening zoom level. Accepted range 5 to 13.
-                    Default: 9.
-
-     ?follow=0      Pins the map to the opening box. Without this the station
-                    set follows wherever you pan, one request per pause.
-                    Default: follow pans.
-
-     ?base=light    Background map, and the opening value of the Base map
-                    picker at the top of the chip rail. The picker switches
-                    the base live, with no reload, and writes the choice back
-                    into this argument so a bookmark or a refresh holds it.
-                    What governs legibility here is SATURATION, not lightness:
-                    the five category colours must be the only saturated
-                    things on the screen. Any neutral base works.
-
-                      dark     Esri Dark Gray Canvas. Keyless. The default.
-                      light    Esri Light Gray Canvas. Keyless. Same
-                               cartography inverted; better in a bright cockpit
-                               or on a projector.
-                      relief   USGS shaded relief from 3DEP. Keyless, federal,
-                               near-grayscale, no labels of its own. The best
-                               choice at a mountain field: terrain is the
-                               basemap rather than an overlay.
-                      topo     USGS topographic quads. Keyless. Contours and
-                               place detail, but coloured, so the dots fight it.
-                      imagery  Esri World Imagery. Keyless. Saturated greens
-                               and browns; the VFR green suffers. Handsome,
-                               not legible.
-                      osm      OpenStreetMap standard. Keyless, but their tile
-                               usage policy is for light traffic only, and the
-                               colour competes with the dots.
-                      carto    CARTO Dark Matter. Requires CONFIG.cartoKey.
-
-                    The hillshade defaults off over relief, topo and imagery,
-                    which already carry terrain, and that default is reapplied
-                    on each live switch — but only while the person has not
-                    touched the Terrain chip or passed ?terrain=. Once they
-                    have, the choice is theirs and a base switch leaves it
-                    alone.
-                    Default: dark.
-
-     ?help          Print the option reference as plain text and build
-                    nothing: no map, no layers, no weather requests. Also ?h.
-                    The HELP constant further down is that text, and it is the
-                    copy users actually read — keep the two in step.
-
-     ?national=0    At views wider than maxSpanDeg the map adds a backbone of
-                    major reporting fields spread across the country, so the
-                    whole visible map is populated at low density instead of a
-                    dense patch around the center with empty edges. Local
-                    detail around the center is still pulled by geography
-                    alongside it. Turn this off to go back to centre-only
-                    coverage.
-                    Default: on.
-
-     ?radar=1       NEXRAD base reflectivity, on at load.
-                    Default: off.
-
-     ?trend=0       Each station carries an arrow when its condition has moved
-                    inside the look-back window. A filled arrow means the
-                    flight category itself changed; an outlined one means the
-                    category held but ceiling or visibility moved materially.
-                    No arrow means no meaningful change. Costs one extra
-                    request, and is skipped at wide view, where the 400-entry
-                    cap makes it meaningless.
-                    Default: on.
-
-     ?hours=6       Opening position of the time scrub, in hours ahead.
-                    Range 0 to scrubMax. Every forecast layer reads this one
-                    offset — freezing level, winds aloft, G-AIRMET and the
-                    marker on the forecast strip — and moving the slider
-                    issues no request at all, because the hourly data is
-                    already in hand. Station observations never move with it,
-                    so an amber frame marks the display as off-nominal and the
-                    dock names what moved and what did not. The markers are
-                    NOT dimmed: that was the first attempt and it degraded
-                    exactly what the scrub is used to read against.
-                    Default: 0.
-
-     ?route=1A5+AVL+TYS
-                    Open the route panel on this course. Two or more
-                    identifiers, any separator. The course is drawn, fields
-                    within routeWidthNm of it are selected, and the profile
-                    shows terrain, the freezing level at the scrubbed hour,
-                    and each field's reported ceiling converted to MSL.
-                    Nothing is interpolated between fields.
-                    Default: panel closed.
-
-     ?tafhours=12   Width of the forecast strip, in hours. Range 3 to 24. The
-                    strip body is the governing forecast (the initial group,
-                    FM and BECMG); the thin stripe above it is TEMPO or PROB,
-                    which is a stated risk inside the period rather than a
-                    forecast of it.
-                    Default: 12.
-
-     ?terrain=0     Shaded relief under the map. Terrain is part of the
-                    go/no-go at most fields in the southern Appalachians, so
-                    this is on unless you turn it off.
-                    Default: on.
-
-                    Both accept 1/0, on/off, true/false, yes/no. A bare flag
-                    with no value counts as on, so ?radar and ?radar=1 are the
-                    same thing. Either layer can still be toggled from the chip
-                    rail once the page is up; these only set the opening state.
-
-   Examples:
-     /MetarMaps/                        K1A5, the default
-     /MetarMaps/?apt=KAVL               Asheville
-     /MetarMaps/?apt=KTYS&span=3        Knoxville, wider view
-     /MetarMaps/?apt=KGSP&follow=0      Greenville-Spartanburg, fixed box
-     /MetarMaps/?apt=KAVL&terrain=0     Asheville, relief off
-     /MetarMaps/?base=relief            K1A5 on USGS shaded relief
-     /MetarMaps/?apt=KAVL&tafhours=24   Asheville, full day of forecast
-     /MetarMaps/?trend=0                no trend arrows, one request fewer
-     /MetarMaps/?route=1A5+AVL+TYS      a course with its terrain profile
-     /MetarMaps/?hours=6&base=relief    six hours out on shaded relief
-     /MetarMaps/?national=0             centre-only coverage when zoomed out
-     /MetarMaps/?apt=KGSP&base=light    Greenville-Spartanburg, light base
-     /MetarMaps/?apt=K1A5&radar=1       K1A5 with radar up at load
-
-   Bookmark the URL and the page comes up on that field every time. Handing a
-   colleague a different link gives them their own tool, not yours.
-
-   ----------------------------------------------------------------------------
-   CONFIG — settings that belong to the deployment, not the invocation
-   ----------------------------------------------------------------------------
-   These are edited in the file below because they are properties of how and
-   where the page is hosted. They are not exposed in the URL on purpose: a
-   query string is for what a pilot chooses, not for what an administrator
-   configured once.
-
-     proxy       The one setting most deployments must change. AWC does not
-                 permit cross-origin browser requests, so a browser will
-                 normally block a direct call. Point this at your own relay
-                 (see worker.js). Leave empty to try AWC directly first.
-     cartoKey    Optional. CARTO began requiring an API key on their raster
-                 basemaps in August 2026. Empty means the keyless Esri dark
-                 base map is used, which is the default and needs no account.
-     home        Fallback field. Used only when no ?apt= is supplied, and when
-                 a supplied identifier cannot be resolved.
-     spanDeg     Default for ?span=.
-     homeZoom    Default for ?zoom=.
-     followMap   Default for ?follow=.
-     basemap     Opening value for ?base= and the picker. The catalogue is the
-                 BASEMAPS table further down: add a row there and it appears in
-                 the picker, with a label in BASE_LABEL. A row carrying key:true
-                 is listed disabled until CONFIG.cartoKey is set, rather than
-                 hidden, so the reason it is unavailable is visible.
-     showRadar   Default for ?radar=.
-     showTerrain Default for ?terrain=.
-     showTrend   Default for ?trend=, with trendHours the look-back window and
-     trendHours    trendMovePct the within-category move worth an outlined
-     trendMovePct  arrow.
-     tafHours    Default for ?tafhours=. tafSearch is how many fields outward
-     tafSearch     from home to try before giving up on finding one with a TAF.
-     scrubMax    How far ahead the time scrub reaches, in hours. The Open-Meteo
-                 requests ask for three days, so this can be raised well past
-                 the default without costing anything.
-     routeWidthNm  Half-width of the route corridor. A field further than this
-                 from the course is not shown in the profile.
-     lowCloudTopFt  The icing inputs. See the freezing-level section.
-     cloudThreshold
-     frzHours
-     markerScale Global size multiplier for the station glyphs, with
-     markerGrowth  markerGrowth controlling how fast they grow with zoom and
-     markerMin     markerMin/markerMax bounding the result.
-     markerMax
-     refreshMs   Poll interval. AWC's limit is 100 requests per minute across
-                 all clients, so five minutes is polite. Leave it alone.
-     staleMin    Age past which an observation is drawn as no current data
-                 rather than in its last category. A stale green dot over a
-                 field that went IFR two hours ago is the failure that hurts
-                 someone, so this is deliberately conservative.
-     maxSpanDeg  Widest box requested by geography, however far you zoom out,
-                 and the threshold past which the national backbone comes in.
-                 AWC truncates any response at 400 stations; the status bar
-                 says so when a local request hits that.
-     national    Default for ?national=. The list itself is the NATIONAL table
-                 further down; it is a backbone, not a census, and a wrong
-                 entry costs nothing because unknown identifiers return empty.
-     maxMarkers  Above this count the display thins: stations are bucketed
-                 into screen cells and one is kept per cell, always the one in
-                 the WORST condition. Thinning may hide good news. It must
-                 never hide weather.
-
-   ----------------------------------------------------------------------------
-   DATA
-   ----------------------------------------------------------------------------
-     METAR, TAF            NOAA / Aviation Weather Center   needs the proxy
-     AIRMET / SIGMET       NOAA / Aviation Weather Center   needs the proxy
-     G-AIRMET              NOAA / Aviation Weather Center   needs the proxy
-     Winds aloft           Open-Meteo pressure levels       cross-origin open
-     Freezing level, cloud Open-Meteo                       cross-origin open
-     Route terrain         Open-Meteo 90 m DEM elevation    cross-origin open
-     Radar                 NOAA NEXRAD via Iowa State       tiles, no key
-     Terrain, base, labels Esri / USGS                      tiles, no key
-
-   Raw METAR and TAF text are parsed here rather than trusting decoded fields,
-   so the same code path serves any feed that returns a raw report. Both go
-   through one token scanner, parseConditions, because a forecast group and an
-   observation body carry the same tokens.
-   ========================================================================== */
 
 const CONFIG = {
   // Fallback home field, used when no ?apt= is supplied and when a supplied
