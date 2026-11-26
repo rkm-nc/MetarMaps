@@ -7,6 +7,8 @@
 
    Reference and planning only. Not for navigation.
 
+   Developer: R.K. McMahan rkm.public@gmail.com
+
    ----------------------------------------------------------------------------
    INVOCATION — the query string is the argument list
    ----------------------------------------------------------------------------
@@ -651,6 +653,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 
+
 const CONFIG = {
   // Fallback home field, used when no ?apt= is supplied and when a supplied
   // identifier cannot be resolved. Everything about the real home field is
@@ -670,7 +673,7 @@ const CONFIG = {
   //   'https://metarmaps.<your-subdomain>.workers.dev/?u='
   // The target URL is appended, URI-encoded. Leave '' to try AWC directly.
 
-  proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
+   proxy: 'https://metarmaps.pulleys-brander-3g.workers.dev/?u=',
 
   // Optional. Leave empty to use the keyless Esri dark base map. Supply a free
   // CARTO key (carto.com/basemaps/apikey) only if you prefer their cartography.
@@ -1602,9 +1605,11 @@ function renderStations(){
       .bindPopup(()=>popupHTML(st), { maxWidth:320 })
       .addTo(layers.stations);
   }
-  renderList(all, shown.length);
+  renderList(all, shown);
   renderHome();
 }
+
+let focusId = null;   // the field the person last picked from the list
 
 /* Too many markers at low zoom is not density, it is noise. Bucket stations
    into screen-space cells and keep one per cell — the one in the WORST
@@ -1613,21 +1618,36 @@ const CAT_RANK = { LIFR:4, IFR:3, MVFR:2, VFR:1, NONE:0 };
 function thinForZoom(list){
   if(list.length <= CONFIG.maxMarkers) return list;
   const cell = Math.round(52 * iconScale()), keep = new Map();
-  let home = null;
+  const pinned = [];
   for(const st of list){
-    if(st.id === CONFIG.home.id){ home = st; continue; }
+    // The home field and whichever field was just picked from the list are
+    // always drawn: clicking a row must never fail to produce a marker.
+    if(st.id === CONFIG.home.id || st.id === focusId){ pinned.push(st); continue; }
     const pt = map.latLngToContainerPoint([st.lat, st.lon]);
     const k = Math.floor(pt.x/cell) + ':' + Math.floor(pt.y/cell);
     const cur = keep.get(k);
     if(!cur || CAT_RANK[st.cat] > CAT_RANK[cur.cat]) keep.set(k, st);
   }
-  const out = [...keep.values()];
-  if(home) out.push(home);
-  return out;
+  return [...keep.values()].concat(pinned);
 }
 
-function renderList(list, shownCount){
-  const rows = list.slice(0,60).map(st=>{
+function renderList(list, drawn){
+  /* The panel is headed "Fields in view", so it has to hold the fields in
+     view. It used to be handed every station the app was holding, sorted by
+     distance from the centre — which meant that after a pan it still listed
+     fields far behind you, and panning somewhere with no reporting field at
+     all left the previous area's list sitting there unchanged. The list
+     re-rendered on every move; it just was not filtered to the window.
+
+     Markers are deliberately NOT filtered this way. An off-screen marker costs
+     nothing and keeping it avoids churn as the map moves. */
+  const b = map.getBounds();
+  const vis = CONFIG.followMap
+    ? list.filter(st => st.lat != null && st.lon != null && b.contains([st.lat, st.lon]))
+    : list;
+  const drawnIds = new Set((drawn || []).map(st => st.id));
+
+  const rows = vis.slice(0,60).map(st=>{
     const p = st.parsed;
     const det = st.cat==='NONE' ? 'no current observation'
       : `${windText(p)} · ${visText(p&&p.vis, p&&p.visLess)} · ${ceilText(p)}`;
@@ -1642,15 +1662,58 @@ function renderList(list, shownCount){
       <span class="brg">${st.dist==null?'':st.dist.toFixed(0)+' '+compass(st.brg)}</span>
     </div>`;
   }).join('');
-  $('#obsList').innerHTML = rows || '<div class="row"><span></span><span class="det">Waiting for observations</span></div>';
+  // Three distinct empty states, because they mean different things: nothing
+  // fetched yet, nothing reporting in this particular window, and a normal
+  // list. Reusing one message for the first two is how the stale list hid.
+  const empty = stations.size
+    ? 'No reporting fields in this view'
+    : 'Waiting for observations';
+  $('#obsList').innerHTML = rows ||
+    `<div class="row"><span></span><span class="det">${empty}</span></div>`;
   $('#obsTitle').textContent = CONFIG.followMap ? 'Fields in view' : 'Nearby fields';
-  $('#obsCount').textContent = !list.length ? ''
-    : (shownCount < list.length ? `${shownCount} of ${list.length} shown` : `${list.length} reporting`);
+
+  const nDrawn = vis.filter(st => drawnIds.has(st.id)).length;
+  $('#obsCount').textContent = !vis.length ? ''
+    : (nDrawn < vis.length ? `${nDrawn} of ${vis.length} drawn`
+                           : `${vis.length} in view`);
   $('#obsList').querySelectorAll('.row').forEach(r=>{
-    r.onclick = ()=>{ const st = stations.get(r.dataset.id); if(!st) return;
-      map.setView([st.lat,st.lon], Math.max(map.getZoom(),10));
-      st.marker && st.marker.openPopup(); };
+    r.onclick = () => focusStation(r.dataset.id);
   });
+}
+
+/* Centre on a field and open its popup.
+   ----------------------------------------------------------------------------
+   This looked like three lines of work and was not. Calling openPopup() on the
+   line after setView() put two pans into the air at once: Leaflet animates
+   setView for a short move, and the popup's own autoPan then issues a panBy
+   into the running animation, where they partly cancel. The first click from
+   anywhere else on the map was a long move, which Leaflet jumps rather than
+   animates, so it worked — and every shorter click afterwards only nudged.
+
+   Two further traps. moveend runs renderStations(), which clears and rebuilds
+   every marker, so a marker captured before the move is stale by the time the
+   popup would open; the marker is therefore re-resolved afterwards. And a
+   setView that does not actually move fires no moveend at all, so clicking the
+   field already centred would silently open nothing. */
+function focusStation(id){
+  const st = stations.get(id);
+  if(!st || st.lat == null || st.lon == null) return;
+  focusId = id;                       // exempt from thinning while focused
+  const target = L.latLng(st.lat, st.lon);
+  const z = Math.max(map.getZoom(), 10);
+
+  const openIt = () => {
+    const cur = stations.get(id);     // the marker from after the rebuild
+    if(cur && cur.marker) cur.marker.openPopup();
+  };
+
+  if(map.getZoom() === z && map.getCenter().distanceTo(target) < 1){
+    renderStations();                 // make sure the focus exemption applies
+    openIt();
+    return;
+  }
+  map.once('moveend', openIt);        // fires after renderStations, by registration order
+  map.setView(target, z);
 }
 
 function renderHome(){
